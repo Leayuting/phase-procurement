@@ -363,6 +363,252 @@ function Dashboard({ session, onNavigate }) {
   );
 }
 
+/* ================= 新增採購 ================= */
+const SOURCE_OPTIONS = ['蝦皮', '酷澎', '其他'];
+
+function QtyStepper({ value, onChange }) {
+  return (
+    <div className="flex items-center gap-3">
+      <button type="button" onClick={() => onChange(Math.max(1, value - 1))}
+        className="w-8 h-8 rounded-full border border-ink/20 flex items-center justify-center text-lg leading-none active:scale-95 transition">−</button>
+      <input type="number" min="1" value={value}
+        onChange={e => onChange(Math.max(1, parseInt(e.target.value, 10) || 1))}
+        className="w-12 text-center border border-ink/15 rounded-lg py-1 text-[15px]" />
+      <button type="button" onClick={() => onChange(value + 1)}
+        className="w-8 h-8 rounded-full border border-ink/20 flex items-center justify-center text-lg leading-none active:scale-95 transition">+</button>
+    </div>
+  );
+}
+
+function CustomItemForm({ onAdd, onCancel }) {
+  const [name, setName] = useState('');
+  const [qty, setQty] = useState(1);
+  const [source, setSource] = useState('');
+  const [url, setUrl] = useState('');
+  const [remark, setRemark] = useState('');
+  const [err, setErr] = useState('');
+
+  function submit() {
+    if (!name.trim()) { setErr('請填寫商品名稱'); return; }
+    if (!qty || qty < 1) { setErr('請確認數量'); return; }
+    if (!source) { setErr('請選擇來源'); return; }
+    onAdd({
+      key: 'custom-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+      product_id: null,
+      product_name: name.trim(),
+      quantity: qty,
+      source,
+      url: url.trim() || null,
+      item_remark: remark.trim() || null
+    });
+  }
+
+  return (
+    <Card className="p-4 mt-3">
+      <p className="text-sm font-bold mb-3">新增其他商品</p>
+      <div className="flex flex-col gap-2.5">
+        <input placeholder="商品名稱" value={name} onChange={e => setName(e.target.value)}
+          className="w-full px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-ink/50">數量</span>
+          <QtyStepper value={qty} onChange={setQty} />
+        </div>
+        <div className="flex gap-2">
+          {SOURCE_OPTIONS.map(s => (
+            <button key={s} type="button" onClick={() => setSource(s)}
+              className={cls('flex-1 py-2 rounded-lg border text-sm font-medium transition',
+                source === s ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/70')}>
+              {s}
+            </button>
+          ))}
+        </div>
+        <input placeholder="商品網址（選填）" value={url} onChange={e => setUrl(e.target.value)}
+          className="w-full px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+        <textarea placeholder="備註（選填）" value={remark} onChange={e => setRemark(e.target.value)} rows={2}
+          className="w-full px-3 py-2.5 rounded-lg border border-ink/15 text-[15px] resize-none" />
+        {err && <p className="text-brick text-sm">{err}</p>}
+        <div className="flex gap-2 mt-1">
+          <Button variant="subtle" className="flex-1" onClick={onCancel}>取消</Button>
+          <Button className="flex-1" onClick={submit}>加入清單</Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function NewRequest({ session, onNavigate }) {
+  const [allProducts, setAllProducts] = useState([]);
+  const [loadingProducts, setLoadingProducts] = useState(true);
+  const [search, setSearch] = useState('');
+  const [showCustomForm, setShowCustomForm] = useState(false);
+  const [urgent, setUrgent] = useState(false);
+  const [cart, setCart] = useState([]);
+  const [remark, setRemark] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [successNo, setSuccessNo] = useState(null);
+
+  useEffect(() => {
+    sb.from('products').select('*').eq('enabled', true).order('category').order('name')
+      .then(({ data, error }) => {
+        setAllProducts(error ? [] : data);
+        setLoadingProducts(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!successNo) return;
+    const t = setTimeout(() => onNavigate('dashboard'), 3000);
+    return () => clearTimeout(t);
+  }, [successNo, onNavigate]);
+
+  const searchResults = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return [];
+    return allProducts.filter(p =>
+      p.name.toLowerCase().includes(term) || p.category.toLowerCase().includes(term)
+    ).slice(0, 20);
+  }, [search, allProducts]);
+
+  function addProduct(p) {
+    setCart(prev => {
+      const existing = prev.find(it => it.product_id === p.id);
+      if (existing) {
+        return prev.map(it => it.product_id === p.id ? { ...it, quantity: it.quantity + 1 } : it);
+      }
+      return [...prev, { key: 'p-' + p.id, product_id: p.id, product_name: p.name, quantity: 1, source: null, url: null, item_remark: null }];
+    });
+    setSearch('');
+  }
+  function addCustom(item) {
+    setCart(prev => [...prev, item]);
+    setShowCustomForm(false);
+  }
+  function updateQty(key, qty) {
+    setCart(prev => prev.map(it => it.key === key ? { ...it, quantity: qty } : it));
+  }
+  function removeItem(key) {
+    setCart(prev => prev.filter(it => it.key !== key));
+  }
+
+  async function submit() {
+    setError('');
+    if (cart.length === 0) { setError('請至少加入一項商品'); return; }
+    setSubmitting(true);
+    const { data, error: rpcError } = await sb.rpc('create_purchase_request', {
+      p_store: session.store,
+      p_applicant_id: session.userId,
+      p_urgent: urgent,
+      p_remark: remark.trim() || null,
+      p_items: cart.map(it => ({
+        product_id: it.product_id,
+        product_name: it.product_name,
+        quantity: it.quantity,
+        source: it.source,
+        url: it.url,
+        item_remark: it.item_remark
+      }))
+    });
+    setSubmitting(false);
+    if (rpcError) { setError('送出失敗，請稍後再試'); return; }
+    setSuccessNo(data.request_no);
+  }
+
+  if (successNo) {
+    return (
+      <div className="min-h-[70vh] flex flex-col items-center justify-center text-center">
+        <p className="text-sm text-ink/50 mb-3">採購單已送出</p>
+        <p className="text-4xl font-black font-mono mb-2">{successNo}</p>
+        <p className="text-sm text-ink/40">即將返回 Dashboard…</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pb-28">
+      <p className="text-lg font-bold mb-4">新增採購</p>
+
+      <Card className="p-4 mb-4">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm text-ink/50">申請人</span>
+          <span className="text-sm font-medium">{session.name}</span>
+        </div>
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm text-ink/50">門市</span>
+          <span className="text-sm font-medium">{session.store}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-ink/50">是否急件</span>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setUrgent(false)}
+              className={cls('px-4 py-1.5 rounded-full text-sm font-medium border transition',
+                !urgent ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/60')}>一般</button>
+            <button type="button" onClick={() => setUrgent(true)}
+              className={cls('px-4 py-1.5 rounded-full text-sm font-medium border transition',
+                urgent ? 'bg-brick text-white border-brick' : 'border-ink/15 text-ink/60')}>急件</button>
+          </div>
+        </div>
+      </Card>
+
+      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜尋商品（名稱／分類）"
+        className="w-full px-4 py-3 rounded-xl border border-ink/15 bg-white text-[15px] mb-2" />
+
+      {search.trim() && (
+        <Card className="mb-2 overflow-hidden">
+          {loadingProducts ? <div className="py-6 text-center text-sm text-ink/40">載入中…</div> : (
+            searchResults.length > 0 ? (
+              <div className="divide-y divide-black/5">
+                {searchResults.map(p => (
+                  <button key={p.id} type="button" onClick={() => addProduct(p)}
+                    className="w-full text-left px-4 py-3 hover:bg-black/5 flex items-center justify-between">
+                    <span className="text-[15px]">{p.name}</span>
+                    <span className="text-xs text-ink/40">{p.category}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="py-6 text-center text-sm text-ink/40">找不到符合的商品</div>
+            )
+          )}
+        </Card>
+      )}
+
+      {!showCustomForm ? (
+        <button type="button" onClick={() => setShowCustomForm(true)} className="text-sm text-ink/50 underline mb-4">
+          找不到商品？新增其他商品
+        </button>
+      ) : (
+        <CustomItemForm onAdd={addCustom} onCancel={() => setShowCustomForm(false)} />
+      )}
+
+      <p className="text-sm font-medium text-ink/60 mt-6 mb-2">採購清單（{cart.length}）</p>
+      <div className="flex flex-col gap-2 mb-4">
+        {cart.map(it => (
+          <Card key={it.key} className="px-4 py-3 flex items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[15px] font-medium truncate">{it.product_name}</p>
+              {it.source && <p className="text-xs text-ink/40 mt-0.5">來源：{it.source}{it.item_remark ? ' · ' + it.item_remark : ''}</p>}
+            </div>
+            <QtyStepper value={it.quantity} onChange={q => updateQty(it.key, q)} />
+            <button type="button" onClick={() => removeItem(it.key)} className="text-ink/30 hover:text-brick text-lg px-1">🗑️</button>
+          </Card>
+        ))}
+        {cart.length === 0 && <p className="text-sm text-ink/30 text-center py-8">尚未加入任何商品</p>}
+      </div>
+
+      <textarea value={remark} onChange={e => setRemark(e.target.value)} placeholder="整單備註（選填）" rows={3}
+        className="w-full px-4 py-3 rounded-xl border border-ink/15 bg-white text-[15px] resize-none mb-2" />
+      {error && <p className="text-brick text-sm mb-2">{error}</p>}
+
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent safe-bottom">
+        <Button variant="brick" disabled={submitting} onClick={submit} className="w-full max-w-md mx-auto flex">
+          {submitting ? '送出中…' : '送出採購'}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /* ================= App Shell ================= */
 function NavBar({ session, screen, onNavigate, onLogout }) {
   const isAdmin = session.role === 'admin';
@@ -444,7 +690,7 @@ function App() {
       <NavBar session={session} screen={screen} onNavigate={setScreen} onLogout={handleLogout} />
       <div className="max-w-4xl mx-auto px-4 py-5">
         {screen === 'dashboard' && <Dashboard session={session} onNavigate={setScreen} />}
-        {screen === 'new' && <Placeholder title="新增採購" />}
+        {screen === 'new' && <NewRequest session={session} onNavigate={setScreen} />}
         {screen === 'manage' && <Placeholder title="採購管理" />}
         {screen === 'products' && <Placeholder title="商品管理" />}
       </div>
