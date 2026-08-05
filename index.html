@@ -45,7 +45,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
 /* ================= 系統常數 ================= */
 const SUPABASE_URL = 'https://zqzlueggtpplhgqkqlij.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxemx1ZWdndHBwbGhncWtxbGlqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4NDAwODEsImV4cCI6MjEwMTQxNjA4MX0.rNwGCY-NF8pkfrlae_zukXN5Vc1-YQvuVIjRmgrYUwg';
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const STORES = ['中山店', '勤美店', '水湳店'];
 const SESSION_KEY = 'phase_procurement_staff_session';
@@ -197,7 +197,7 @@ function LoginScreen({ onStaffLogin, onAdminLogin }) {
   async function pickStore(s) {
     setStore(s);
     setLoadingStaff(true);
-    const { data, error } = await supabase.from('users').select('*')
+    const { data, error } = await sb.from('users').select('*')
       .eq('store', s).eq('role', 'staff').eq('enabled', true).order('name');
     setStaffList(error ? [] : data);
     setLoadingStaff(false);
@@ -208,7 +208,7 @@ function LoginScreen({ onStaffLogin, onAdminLogin }) {
     e.preventDefault();
     setAdminError('');
     setAdminBusy(true);
-    const { error } = await supabase.auth.signInWithPassword({ email: adminEmail.trim(), password: adminPw });
+    const { error } = await sb.auth.signInWithPassword({ email: adminEmail.trim(), password: adminPw });
     if (error) {
       setAdminError('登入失敗，請確認帳號密碼');
       setAdminBusy(false);
@@ -287,7 +287,7 @@ function Dashboard({ session, onNavigate }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    let q = supabase.from('purchase_requests').select('*').order('created_at', { ascending: false }).limit(50);
+    let q = sb.from('purchase_requests').select('*').order('created_at', { ascending: false }).limit(50);
     if (!isAdmin) q = q.eq('store', session.store);
     else if (storeFilter !== 'all') q = q.eq('store', storeFilter);
     const { data, error } = await q;
@@ -297,10 +297,10 @@ function Dashboard({ session, onNavigate }) {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    const ch = supabase.channel('dashboard-requests')
+    const ch = sb.channel('dashboard-requests')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requests' }, load)
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
+    return () => { sb.removeChannel(ch); };
   }, [load]);
 
   const today = taipeiDateStr();
@@ -400,10 +400,10 @@ function App() {
   const [screen, setScreen] = useState('dashboard');
 
   const resolveAdminSession = useCallback(async () => {
-    const { data: { session: authSession } } = await supabase.auth.getSession();
+    const { data: { session: authSession } } = await sb.auth.getSession();
     if (!authSession) { setSession(null); return; }
-    const { data, error } = await supabase.from('users').select('*').eq('auth_uid', authSession.user.id).single();
-    if (error || !data) { await supabase.auth.signOut(); setSession(null); return; }
+    const { data, error } = await sb.from('users').select('*').eq('auth_uid', authSession.user.id).single();
+    if (error || !data) { await sb.auth.signOut(); setSession(null); return; }
     setSession({ type: 'admin', role: 'admin', userId: data.id, name: data.name });
   }, []);
 
@@ -431,7 +431,7 @@ function App() {
   }
   async function handleLogout() {
     localStorage.removeItem(SESSION_KEY);
-    if (session && session.type === 'admin') await supabase.auth.signOut();
+    if (session && session.type === 'admin') await sb.auth.signOut();
     setSession(null);
     setScreen('dashboard');
   }
