@@ -108,7 +108,7 @@ function Spinner() {
   return <div className="flex items-center justify-center py-10 text-ink/40 text-sm">載入中…</div>;
 }
 /* ================= 登入畫面 ================= */
-function StaffPinPad({ store, staffList, onBack, onSuccess }) {
+function StaffPinPad({ store, storePinHash, onBack, onSuccess }) {
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [checking, setChecking] = useState(false);
@@ -119,9 +119,8 @@ function StaffPinPad({ store, staffList, onBack, onSuccess }) {
     setChecking(true);
     const hash = await sha256Hex(nextPin);
     setChecking(false);
-    const matched = staffList.find(u => u.pin_hash === hash);
-    if (matched) {
-      onSuccess(matched);
+    if (storePinHash && hash === storePinHash) {
+      onSuccess();
     } else {
       setError('密碼錯誤');
       setTimeout(() => { setPin(''); setError(''); }, 500);
@@ -138,11 +137,11 @@ function StaffPinPad({ store, staffList, onBack, onSuccess }) {
     });
   }
 
-  if (staffList.length === 0) {
+  if (!storePinHash) {
     return (
       <div className="w-full max-w-sm mx-auto text-center px-6">
         <p className="text-lg font-bold mb-1">{store}</p>
-        <p className="text-sm text-ink/40 py-6">此門市尚未設定人員，請聯絡管理者</p>
+        <p className="text-sm text-ink/40 py-6">此門市尚未設定登入 PIN，請聯絡管理者</p>
         <button onClick={onBack} className="mt-2 text-sm text-ink/40 underline">返回選擇門市</button>
       </div>
     );
@@ -175,8 +174,8 @@ function StaffPinPad({ store, staffList, onBack, onSuccess }) {
 function LoginScreen({ onStaffLogin, onAdminLogin }) {
   const [mode, setMode] = useState('store'); // store | pin | admin
   const [store, setStore] = useState(null);
-  const [staffList, setStaffList] = useState([]);
-  const [loadingStaff, setLoadingStaff] = useState(false);
+  const [storePinHash, setStorePinHash] = useState(null);
+  const [loadingPin, setLoadingPin] = useState(false);
   const [adminEmail, setAdminEmail] = useState('');
   const [adminPw, setAdminPw] = useState('');
   const [adminError, setAdminError] = useState('');
@@ -184,11 +183,10 @@ function LoginScreen({ onStaffLogin, onAdminLogin }) {
 
   async function pickStore(s) {
     setStore(s);
-    setLoadingStaff(true);
-    const { data, error } = await sb.from('users').select('*')
-      .eq('store', s).eq('role', 'staff').eq('enabled', true).order('name');
-    setStaffList(error ? [] : data);
-    setLoadingStaff(false);
+    setLoadingPin(true);
+    const { data } = await sb.from('store_pins').select('pin_hash').eq('store', s).single();
+    setStorePinHash(data ? data.pin_hash : null);
+    setLoadingPin(false);
     setMode('pin');
   }
 
@@ -229,8 +227,9 @@ function LoginScreen({ onStaffLogin, onAdminLogin }) {
       )}
 
       {mode === 'pin' && (
-        loadingStaff ? <Spinner /> :
-        <StaffPinPad store={store} staffList={staffList} onBack={() => setMode('store')} onSuccess={onStaffLogin} />
+        loadingPin ? <Spinner /> :
+        <StaffPinPad store={store} storePinHash={storePinHash} onBack={() => setMode('store')}
+          onSuccess={() => onStaffLogin(store)} />
       )}
 
       {mode === 'admin' && (
@@ -305,7 +304,7 @@ function Dashboard({ session, onNavigate }) {
       <div className="flex items-center justify-between mb-4">
         <div>
           <p className="text-lg font-bold">Dashboard</p>
-          <p className="text-xs text-ink/40">{isAdmin ? '全部門市' : session.store} · {session.name}</p>
+          <p className="text-xs text-ink/40">{isAdmin ? '全部門市 · ' + session.name : session.store}</p>
         </div>
         {isAdmin && (
           <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
@@ -437,7 +436,7 @@ function NewRequest({ session, onNavigate }) {
   const [error, setError] = useState('');
   const [successNo, setSuccessNo] = useState(null);
   const [storeStaff, setStoreStaff] = useState([]);
-  const [applicantId, setApplicantId] = useState(session.userId);
+  const [applicantId, setApplicantId] = useState('');
 
   useEffect(() => {
     sb.from('products').select('*').eq('enabled', true).order('category').order('name')
@@ -502,6 +501,7 @@ function NewRequest({ session, onNavigate }) {
 
   async function submit() {
     setError('');
+    if (!applicantId) { setError('請選擇送單人員'); return; }
     if (cart.length === 0) { setError('請至少加入一項商品'); return; }
     setSubmitting(true);
     const { data, error: rpcError } = await sb.rpc('create_purchase_request', {
@@ -542,6 +542,7 @@ function NewRequest({ session, onNavigate }) {
           <span className="text-sm text-ink/50">送單人員</span>
           <select value={applicantId} onChange={e => setApplicantId(e.target.value)}
             className="text-sm font-medium border border-ink/15 rounded-lg px-2.5 py-1.5 bg-white">
+            <option value="">請選擇</option>
             {storeStaff.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
         </div>
@@ -1114,22 +1115,17 @@ function ProductsTab() {
 
 function StaffForm({ store, onSave, onCancel }) {
   const [name, setName] = useState('');
-  const [pin, setPin] = useState('');
   const [err, setErr] = useState('');
 
-  async function submit() {
+  function submit() {
     if (!name.trim()) { setErr('請填寫姓名'); return; }
-    if (!new RegExp(`^\\d{${PIN_LENGTH}}$`).test(pin)) { setErr(`PIN 需為 ${PIN_LENGTH} 位數字`); return; }
-    onSave({ name: name.trim(), pin_hash: await sha256Hex(pin) });
+    onSave({ name: name.trim() });
   }
 
   return (
     <Card className="p-4 mb-3">
       <div className="flex flex-col gap-2.5 mb-2.5">
         <input placeholder="姓名" value={name} onChange={e => setName(e.target.value)}
-          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
-        <input placeholder={`${PIN_LENGTH} 位數 PIN`} value={pin} inputMode="numeric" maxLength={PIN_LENGTH}
-          onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, PIN_LENGTH))}
           className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
       </div>
       {err && <p className="text-brick text-sm mb-2">{err}</p>}
@@ -1141,7 +1137,7 @@ function StaffForm({ store, onSave, onCancel }) {
   );
 }
 
-function ResetPinInline({ onSave, onCancel }) {
+function StorePinResetInline({ onSave, onCancel }) {
   const [pin, setPin] = useState('');
   const [err, setErr] = useState('');
   async function submit() {
@@ -1164,7 +1160,7 @@ function StaffTab() {
   const [staff, setStaff] = useState([]);
   const [loading, setLoading] = useState(true);
   const [addingStore, setAddingStore] = useState(null);
-  const [resettingId, setResettingId] = useState(null);
+  const [resettingStore, setResettingStore] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1183,10 +1179,9 @@ function StaffTab() {
     await sb.from('users').update({ enabled: !u.enabled }).eq('id', u.id);
     await load();
   }
-  async function resetPin(id, hash) {
-    await sb.from('users').update({ pin_hash: hash }).eq('id', id);
-    setResettingId(null);
-    await load();
+  async function resetStorePin(store, hash) {
+    await sb.from('store_pins').upsert({ store, pin_hash: hash, updated_at: new Date().toISOString() });
+    setResettingStore(null);
   }
 
   if (loading) return <Spinner />;
@@ -1197,26 +1192,31 @@ function StaffTab() {
         <div key={store}>
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm font-bold">{store}</p>
-            <button onClick={() => setAddingStore(addingStore === store ? null : store)} className="text-sm text-ink/50 underline">
-              {addingStore === store ? '取消' : '+ 新增人員'}
-            </button>
+            <div className="flex items-center gap-3">
+              <button onClick={() => setResettingStore(resettingStore === store ? null : store)} className="text-sm text-ink/50 underline">
+                {resettingStore === store ? '取消' : '重設登入 PIN'}
+              </button>
+              <button onClick={() => setAddingStore(addingStore === store ? null : store)} className="text-sm text-ink/50 underline">
+                {addingStore === store ? '取消' : '+ 新增人員'}
+              </button>
+            </div>
           </div>
+          {resettingStore === store && (
+            <Card className="p-4 mb-3">
+              <p className="text-sm text-ink/50 mb-1">設定 {store} 的共用登入 PIN（門市手機用這組登入）</p>
+              <StorePinResetInline onSave={h => resetStorePin(store, h)} onCancel={() => setResettingStore(null)} />
+            </Card>
+          )}
           {addingStore === store && (
             <StaffForm store={store} onSave={fields => addStaff(store, fields)} onCancel={() => setAddingStore(null)} />
           )}
           <div className="flex flex-col gap-2">
             {staff.filter(u => u.store === store).map(u => (
-              <Card key={u.id} className={cls('px-4 py-3', !u.enabled && 'opacity-50')}>
-                <div className="flex items-center justify-between">
-                  <span className="text-[15px] font-medium">{u.name}</span>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => setResettingId(resettingId === u.id ? null : u.id)} className="text-sm text-ink/50 underline">重設 PIN</button>
-                    <button onClick={() => toggleEnabled(u)} className={cls('text-sm underline', u.enabled ? 'text-brick' : 'text-ink/50')}>
-                      {u.enabled ? '停用' : '啟用'}
-                    </button>
-                  </div>
-                </div>
-                {resettingId === u.id && <ResetPinInline onSave={h => resetPin(u.id, h)} onCancel={() => setResettingId(null)} />}
+              <Card key={u.id} className={cls('px-4 py-3 flex items-center justify-between', !u.enabled && 'opacity-50')}>
+                <span className="text-[15px] font-medium">{u.name}</span>
+                <button onClick={() => toggleEnabled(u)} className={cls('text-sm underline', u.enabled ? 'text-brick' : 'text-ink/50')}>
+                  {u.enabled ? '停用' : '啟用'}
+                </button>
               </Card>
             ))}
             {staff.filter(u => u.store === store).length === 0 && (
@@ -1431,7 +1431,7 @@ function App() {
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
-        setSession({ type: 'staff', role: 'staff', userId: parsed.userId, name: parsed.name, store: parsed.store });
+        setSession({ type: 'staff', role: 'staff', store: parsed.store });
         return;
       } catch (e) {}
     }
@@ -1444,9 +1444,9 @@ function App() {
     if (!allowed.includes(screen)) setScreen('dashboard');
   }, [session]);
 
-  function handleStaffLogin(user) {
-    const s = { type: 'staff', role: 'staff', userId: user.id, name: user.name, store: user.store };
-    localStorage.setItem(SESSION_KEY, JSON.stringify({ userId: user.id, name: user.name, store: user.store }));
+  function handleStaffLogin(store) {
+    const s = { type: 'staff', role: 'staff', store };
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ store }));
     setSession(s);
     setScreen('dashboard');
   }
