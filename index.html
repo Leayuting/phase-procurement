@@ -754,12 +754,74 @@ function taipeiDayToUtc(dateStr, endOfDay) {
   return new Date(base + (endOfDay ? 24 * 3600 * 1000 - 1 : 0)).toISOString();
 }
 
+function taipeiMonthRange() {
+  const t = taipeiNow();
+  const y = t.getUTCFullYear(), m = t.getUTCMonth();
+  const startIso = new Date(Date.UTC(y, m, 1) - 8 * 3600 * 1000).toISOString();
+  const endIso = new Date(Date.UTC(y, m + 1, 1) - 8 * 3600 * 1000).toISOString();
+  return { startIso, endIso, label: `${y}/${String(m + 1).padStart(2, '0')}` };
+}
+
+function MonthlySummary({ store, onBack }) {
+  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState([]);
+  const { startIso, endIso, label } = useMemo(() => taipeiMonthRange(), []);
+
+  useEffect(() => {
+    setLoading(true);
+    let q = sb.from('purchase_items')
+      .select('product_name, quantity, request_id, purchase_requests!inner(store, created_at, status), products(unit, supplier)')
+      .gte('purchase_requests.created_at', startIso)
+      .lt('purchase_requests.created_at', endIso)
+      .in('purchase_requests.status', ['ordered', 'awaiting', 'done']);
+    if (store !== 'all') q = q.eq('purchase_requests.store', store);
+    q.then(({ data, error }) => {
+      setRows(error ? [] : data || []);
+      setLoading(false);
+    });
+  }, [store, startIso, endIso]);
+
+  const summary = useMemo(() => {
+    const map = {};
+    rows.forEach(it => {
+      const key = it.product_name;
+      if (!map[key]) map[key] = { product_name: key, unit: (it.products && it.products.unit) || '', totalQty: 0, orderIds: new Set() };
+      map[key].totalQty += it.quantity;
+      map[key].orderIds.add(it.request_id);
+    });
+    return Object.values(map).sort((a, b) => b.totalQty - a.totalQty);
+  }, [rows]);
+
+  return (
+    <div>
+      <button onClick={onBack} className="text-sm text-ink/50 underline mb-4">← 返回列表</button>
+      <p className="text-lg font-bold mb-1">本月已叫貨品項統計</p>
+      <p className="text-sm text-ink/40 mb-4">{label}（不含待採購與已取消）{store !== 'all' ? ' · ' + store : ''}</p>
+      {loading ? <Spinner /> : summary.length === 0 ? (
+        <p className="text-sm text-ink/40 text-center py-16">本月尚無已叫貨的品項</p>
+      ) : (
+        <Card className="overflow-hidden">
+          <div className="divide-y divide-black/5">
+            {summary.map(s => (
+              <div key={s.product_name} className="px-4 py-3 flex items-center justify-between">
+                <span className="text-[15px]">{s.product_name}</span>
+                <span className="text-sm text-ink/50">{s.totalQty} {s.unit}<span className="text-ink/30"> · {s.orderIds.size} 筆</span></span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
   const [filters, setFilters] = useState(() => ({ store: 'all', status: 'all', dateFrom: '', dateTo: '', productSearch: '', ...initialFilters }));
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [usersMap, setUsersMap] = useState({});
   const [selectedId, setSelectedId] = useState(initialRequestId || null);
+  const [showSummary, setShowSummary] = useState(false);
 
   useEffect(() => {
     sb.from('users').select('id,name').then(({ data }) => {
@@ -833,13 +895,20 @@ function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
       onBack={() => { setSelectedId(null); load(); }} />;
   }
 
+  if (showSummary) {
+    return <MonthlySummary store={filters.store} onBack={() => setShowSummary(false)} />;
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
         <p className="text-lg font-bold">採購管理</p>
-        <Button variant="ghost" disabled={exporting || rows.length === 0} onClick={exportExcel}>
-          {exporting ? '匯出中…' : '匯出 Excel'}
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={() => setShowSummary(true)}>本月統計</Button>
+          <Button variant="ghost" disabled={exporting || rows.length === 0} onClick={exportExcel}>
+            {exporting ? '匯出中…' : '匯出 Excel'}
+          </Button>
+        </div>
       </div>
       <ManageFilterBar filters={filters} onChange={setFilters} />
 
