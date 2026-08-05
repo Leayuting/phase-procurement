@@ -272,73 +272,42 @@ function StatusPill({ status }) {
   );
 }
 
-function StaffRequestDetail({ requestId, onBack }) {
-  const [req, setReq] = useState(null);
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+function RequestItemsInline({ requestId, remark }) {
+  const [items, setItems] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    Promise.all([
-      sb.from('purchase_requests').select('*').eq('id', requestId).single(),
-      sb.from('purchase_items').select('*').eq('request_id', requestId).order('id')
-    ]).then(([{ data: reqData }, { data: itemData }]) => {
-      if (cancelled) return;
-      setReq(reqData || null);
-      setItems(itemData || []);
-      setLoading(false);
+    sb.from('purchase_items').select('*').eq('request_id', requestId).order('id').then(({ data }) => {
+      if (!cancelled) setItems(data || []);
     });
     return () => { cancelled = true; };
   }, [requestId]);
 
-  if (loading || !req) return <Spinner />;
-
   return (
-    <div className="pb-10">
-      <button onClick={onBack} className="text-sm text-ink/50 underline mb-4">← 返回 Dashboard</button>
-
-      <div className="flex items-center justify-between mb-1">
-        <p className="text-xl font-black font-mono">{req.request_no}</p>
-        {req.urgent && <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-brick text-white">急件</span>}
-      </div>
-      <p className="text-sm text-ink/40 mb-5">{req.store} · {req.applicant_name || '—'} · {fmtDateTime(req.created_at)}</p>
-
-      <Card className="p-4 mb-4">
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-ink/50">狀態</span>
-          <StatusPill status={req.status} />
-        </div>
-      </Card>
-
-      <Card className="p-4 mb-4">
-        <p className="text-sm font-bold mb-3">商品清單</p>
-        <div className="flex flex-col gap-3">
+    <div className="border-t border-black/5 mt-3 pt-3" onClick={e => e.stopPropagation()}>
+      {items === null ? (
+        <p className="text-sm text-ink/30 py-2">載入中…</p>
+      ) : (
+        <div className="flex flex-col gap-2.5">
           {items.map(it => (
-            <div key={it.id} className="border-b border-black/5 last:border-0 pb-3 last:pb-0">
+            <div key={it.id}>
               <div className="flex items-center justify-between">
-                <p className="text-[15px] font-medium">{it.product_name}</p>
+                <p className="text-[15px]">{it.product_name}</p>
                 <p className="text-sm text-ink/50">× {it.quantity}</p>
               </div>
               {it.source && <p className="text-xs text-ink/40 mt-0.5">來源：{it.source}</p>}
               {it.item_remark && <p className="text-xs text-ink/40 mt-0.5">備註：{it.item_remark}</p>}
             </div>
           ))}
+          {remark && <p className="text-xs text-ink/40 pt-1 border-t border-black/5 mt-1">整單備註：{remark}</p>}
         </div>
-      </Card>
-
-      {req.remark && (
-        <Card className="p-4">
-          <p className="text-sm font-bold mb-2">整單備註</p>
-          <p className="text-sm text-ink/60">{req.remark}</p>
-        </Card>
       )}
     </div>
   );
 }
 
 function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
-  const [viewingId, setViewingId] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
   const [storeFilter, setStoreFilter] = useState('all');
@@ -371,10 +340,6 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
     return { pendingToday, buyToday, doneToday };
   }, [rows, today]);
 
-  if (viewingId) {
-    return <StaffRequestDetail requestId={viewingId} onBack={() => setViewingId(null)} />;
-  }
-
   return (
     <div className="pb-28">
       <div className="flex items-center justify-between mb-4">
@@ -404,13 +369,16 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
       {loading ? <Spinner /> : (
         <div className="flex flex-col gap-2">
           {rows.slice(0, 12).map(r => (
-            <Card key={r.id} onClick={() => (isAdmin ? onOpenRequest(r.id) : setViewingId(r.id))}
-              className="px-4 py-3 flex items-center justify-between cursor-pointer hover:border-ink/20">
-              <div className="min-w-0">
-                <p className="font-mono text-sm font-semibold truncate">{r.request_no}</p>
-                <p className="text-xs text-ink/40 mt-0.5">{isAdmin ? r.store + ' · ' : ''}{fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
+            <Card key={r.id} onClick={() => (isAdmin ? onOpenRequest(r.id) : setExpandedId(id => id === r.id ? null : r.id))}
+              className="px-4 py-3 cursor-pointer hover:border-ink/20">
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <p className="font-mono text-sm font-semibold truncate">{r.request_no}</p>
+                  <p className="text-xs text-ink/40 mt-0.5">{isAdmin ? r.store + ' · ' : ''}{fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
+                </div>
+                <StatusPill status={r.status} />
               </div>
-              <StatusPill status={r.status} />
+              {!isAdmin && expandedId === r.id && <RequestItemsInline requestId={r.id} remark={r.remark} />}
             </Card>
           ))}
           {rows.length === 0 && <p className="text-sm text-ink/40 text-center py-10">目前沒有採購紀錄</p>}
