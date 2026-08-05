@@ -101,15 +101,6 @@ function Button({ children, onClick, variant = 'primary', className, disabled, t
 function Spinner() {
   return <div className="flex items-center justify-center py-10 text-ink/40 text-sm">載入中…</div>;
 }
-function Toast({ msg }) {
-  if (!msg) return null;
-  return (
-    <div className="fixed top-4 left-1/2 -translate-x-1/2 bg-ink text-cream px-5 py-2.5 rounded-full text-sm font-medium shadow-lg z-[999]">
-      {msg}
-    </div>
-  );
-}
-
 /* ================= 登入畫面 ================= */
 function StaffPinPad({ store, staffList, onBack, onSuccess }) {
   const [selectedUser, setSelectedUser] = useState(null);
@@ -1240,10 +1231,6 @@ function NavBar({ session, screen, onNavigate, onLogout }) {
       </div>
     </div>
   );
-}
-
-function Placeholder({ title }) {
-  return <div className="py-20 text-center text-ink/40 text-sm">{title}（建置中）</div>;
 }
 
 function App() {
