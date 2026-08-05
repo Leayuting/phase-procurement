@@ -27,6 +27,7 @@
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
 <style>
@@ -642,7 +643,7 @@ function taipeiDayToUtc(dateStr, endOfDay) {
   return new Date(base + (endOfDay ? 24 * 3600 * 1000 - 1 : 0)).toISOString();
 }
 
-function ManagePage({ session, onNavigate, initialRequestId, onExportClick }) {
+function ManagePage({ session, onNavigate, initialRequestId }) {
   const [filters, setFilters] = useState({ store: 'all', status: 'all', dateFrom: '', dateTo: '', productSearch: '' });
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -685,6 +686,37 @@ function ManagePage({ session, onNavigate, initialRequestId, onExportClick }) {
     return () => { sb.removeChannel(ch); };
   }, [load]);
 
+  const [exporting, setExporting] = useState(false);
+  async function exportExcel() {
+    if (rows.length === 0) return;
+    setExporting(true);
+    const ids = rows.map(r => r.id);
+    const { data: itemRows } = await sb.from('purchase_items').select('*, products(unit,supplier)').in('request_id', ids);
+    const reqById = {};
+    rows.forEach(r => { reqById[r.id] = r; });
+    const exportRows = (itemRows || []).map(it => {
+      const req = reqById[it.request_id];
+      return {
+        '採購單號': req.request_no,
+        '日期': fmtDateTime(req.created_at),
+        '門市': req.store,
+        '申請人': usersMap[req.applicant_id] || '',
+        '商品名稱': it.product_name,
+        '數量': it.quantity,
+        '單位': (it.products && it.products.unit) || '',
+        '供應商': (it.products && it.products.supplier) || '',
+        '來源': it.source || '',
+        '狀態': STATUS_META[req.status] ? STATUS_META[req.status].label : req.status,
+        '備註': it.item_remark || req.remark || ''
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(exportRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '採購明細');
+    XLSX.writeFile(wb, `PHASE採購紀錄_${taipeiDateStr().replace(/-/g, '')}.xlsx`);
+    setExporting(false);
+  }
+
   if (selectedId) {
     return <ManageDetail requestId={selectedId} session={session} usersMap={usersMap}
       onBack={() => { setSelectedId(null); load(); }} />;
@@ -694,7 +726,9 @@ function ManagePage({ session, onNavigate, initialRequestId, onExportClick }) {
     <div>
       <div className="flex items-center justify-between mb-4">
         <p className="text-lg font-bold">採購管理</p>
-        <Button variant="ghost" onClick={onExportClick}>匯出 Excel</Button>
+        <Button variant="ghost" disabled={exporting || rows.length === 0} onClick={exportExcel}>
+          {exporting ? '匯出中…' : '匯出 Excel'}
+        </Button>
       </div>
       <ManageFilterBar filters={filters} onChange={setFilters} />
 
@@ -1262,7 +1296,7 @@ function App() {
       <div className="max-w-4xl mx-auto px-4 py-5">
         {screen === 'dashboard' && <Dashboard session={session} onNavigate={setScreen} />}
         {screen === 'new' && <NewRequest session={session} onNavigate={setScreen} />}
-        {screen === 'manage' && <ManagePage session={session} onNavigate={setScreen} onExportClick={() => alert('匯出功能即將推出')} />}
+        {screen === 'manage' && <ManagePage session={session} onNavigate={setScreen} />}
         {screen === 'products' && <ProductsPage />}
       </div>
     </div>
