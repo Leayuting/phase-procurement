@@ -609,6 +609,302 @@ function NewRequest({ session, onNavigate }) {
   );
 }
 
+/* ================= 採購管理（管理者） ================= */
+const STATUS_ORDER = ['pending', 'ordered', 'awaiting', 'done', 'cancelled'];
+
+function ManageFilterBar({ filters, onChange }) {
+  function set(patch) { onChange({ ...filters, ...patch }); }
+  return (
+    <Card className="p-3 mb-4 flex flex-wrap gap-2 items-center">
+      <select value={filters.store} onChange={e => set({ store: e.target.value })}
+        className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
+        <option value="all">全部門市</option>
+        {STORES.map(s => <option key={s} value={s}>{s}</option>)}
+      </select>
+      <select value={filters.status} onChange={e => set({ status: e.target.value })}
+        className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
+        <option value="all">全部狀態</option>
+        {STATUS_ORDER.map(s => <option key={s} value={s}>{STATUS_META[s].label}</option>)}
+      </select>
+      <input type="date" value={filters.dateFrom} onChange={e => set({ dateFrom: e.target.value })}
+        className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
+      <span className="text-ink/30 text-sm">至</span>
+      <input type="date" value={filters.dateTo} onChange={e => set({ dateTo: e.target.value })}
+        className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
+      <input type="text" value={filters.productSearch} onChange={e => set({ productSearch: e.target.value })}
+        placeholder="搜尋商品名稱" className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white flex-1 min-w-[140px]" />
+    </Card>
+  );
+}
+
+function taipeiDayToUtc(dateStr, endOfDay) {
+  const base = Date.parse(dateStr + 'T00:00:00Z') - 8 * 3600 * 1000;
+  return new Date(base + (endOfDay ? 24 * 3600 * 1000 - 1 : 0)).toISOString();
+}
+
+function ManagePage({ session, onNavigate, initialRequestId, onExportClick }) {
+  const [filters, setFilters] = useState({ store: 'all', status: 'all', dateFrom: '', dateTo: '', productSearch: '' });
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [usersMap, setUsersMap] = useState({});
+  const [selectedId, setSelectedId] = useState(initialRequestId || null);
+
+  useEffect(() => {
+    sb.from('users').select('id,name').then(({ data }) => {
+      const m = {};
+      (data || []).forEach(u => { m[u.id] = u.name; });
+      setUsersMap(m);
+    });
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    let matchIds = null;
+    if (filters.productSearch.trim()) {
+      const { data: itemRows } = await sb.from('purchase_items').select('request_id')
+        .ilike('product_name', `%${filters.productSearch.trim()}%`);
+      matchIds = Array.from(new Set((itemRows || []).map(r => r.request_id)));
+      if (matchIds.length === 0) { setRows([]); setLoading(false); return; }
+    }
+    let q = sb.from('purchase_requests').select('*, purchase_items(count)').order('created_at', { ascending: false });
+    if (filters.store !== 'all') q = q.eq('store', filters.store);
+    if (filters.status !== 'all') q = q.eq('status', filters.status);
+    if (filters.dateFrom) q = q.gte('created_at', taipeiDayToUtc(filters.dateFrom, false));
+    if (filters.dateTo) q = q.lte('created_at', taipeiDayToUtc(filters.dateTo, true));
+    if (matchIds) q = q.in('id', matchIds);
+    const { data, error } = await q.limit(300);
+    setRows(error ? [] : data);
+    setLoading(false);
+  }, [filters]);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const ch = sb.channel('manage-requests')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requests' }, load)
+      .subscribe();
+    return () => { sb.removeChannel(ch); };
+  }, [load]);
+
+  if (selectedId) {
+    return <ManageDetail requestId={selectedId} session={session} usersMap={usersMap}
+      onBack={() => { setSelectedId(null); load(); }} />;
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-lg font-bold">採購管理</p>
+        <Button variant="ghost" onClick={onExportClick}>匯出 Excel</Button>
+      </div>
+      <ManageFilterBar filters={filters} onChange={setFilters} />
+
+      {loading ? <Spinner /> : rows.length === 0 ? (
+        <p className="text-sm text-ink/40 text-center py-16">沒有符合條件的採購單</p>
+      ) : (
+        <React.Fragment>
+          {/* 桌機 Table */}
+          <div className="hidden md:block overflow-x-auto rounded-2xl border border-black/5 bg-white">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-ink/40 border-b border-black/5">
+                  <th className="px-4 py-3 font-medium">採購單號</th>
+                  <th className="px-4 py-3 font-medium">日期</th>
+                  <th className="px-4 py-3 font-medium">門市</th>
+                  <th className="px-4 py-3 font-medium">申請人</th>
+                  <th className="px-4 py-3 font-medium">商品數</th>
+                  <th className="px-4 py-3 font-medium">急件</th>
+                  <th className="px-4 py-3 font-medium">狀態</th>
+                  <th className="px-4 py-3 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.id} className="border-b border-black/5 last:border-0 hover:bg-black/[0.02]">
+                    <td className="px-4 py-3 font-mono font-medium">{r.request_no}</td>
+                    <td className="px-4 py-3 text-ink/60">{fmtDateTime(r.created_at)}</td>
+                    <td className="px-4 py-3">{r.store}</td>
+                    <td className="px-4 py-3">{usersMap[r.applicant_id] || '—'}</td>
+                    <td className="px-4 py-3">{r.purchase_items?.[0]?.count ?? 0}</td>
+                    <td className="px-4 py-3">{r.urgent ? <span className="text-brick font-bold">急件</span> : ''}</td>
+                    <td className="px-4 py-3"><StatusPill status={r.status} /></td>
+                    <td className="px-4 py-3">
+                      <button onClick={() => setSelectedId(r.id)} className="text-sm underline text-ink/60">查看</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 手機卡片 */}
+          <div className="md:hidden flex flex-col gap-2">
+            {rows.map(r => (
+              <Card key={r.id} className="p-4 cursor-pointer" onClick={() => setSelectedId(r.id)}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-mono font-semibold text-sm">{r.request_no}</span>
+                  <StatusPill status={r.status} />
+                </div>
+                <p className="text-xs text-ink/40">{r.store} · {usersMap[r.applicant_id] || '—'} · {fmtDateTime(r.created_at)}</p>
+                <div className="flex items-center justify-between mt-2">
+                  <span className="text-xs text-ink/40">{r.purchase_items?.[0]?.count ?? 0} 項商品</span>
+                  {r.urgent && <span className="text-xs text-brick font-bold">急件</span>}
+                </div>
+              </Card>
+            ))}
+          </div>
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+function ManageDetail({ requestId, session, usersMap, onBack }) {
+  const [req, setReq] = useState(null);
+  const [items, setItems] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [remarkDraft, setRemarkDraft] = useState('');
+  const [itemDrafts, setItemDrafts] = useState({});
+  const [conflictMsg, setConflictMsg] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [{ data: reqData }, { data: itemData }, { data: logData }] = await Promise.all([
+      sb.from('purchase_requests').select('*').eq('id', requestId).single(),
+      sb.from('purchase_items').select('*').eq('request_id', requestId).order('id'),
+      sb.from('status_logs').select('*').eq('request_id', requestId).order('created_at', { ascending: false })
+    ]);
+    setReq(reqData || null);
+    setItems(itemData || []);
+    setLogs(logData || []);
+    setRemarkDraft(reqData?.remark || '');
+    const drafts = {};
+    (itemData || []).forEach(it => { drafts[it.id] = it.item_remark || ''; });
+    setItemDrafts(drafts);
+    setLoading(false);
+  }, [requestId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function changeStatus(newStatus) {
+    if (!req || newStatus === req.status) return;
+    const { data, error } = await sb.from('purchase_requests')
+      .update({ status: newStatus, updated_at: new Date().toISOString() })
+      .eq('id', req.id).eq('status', req.status).select();
+    if (error || !data || data.length === 0) {
+      setConflictMsg('此筆資料剛被其他人更新，已重新整理');
+      await load();
+      return;
+    }
+    await sb.from('status_logs').insert({
+      request_id: req.id, old_status: req.status, new_status: newStatus,
+      operator_id: session.userId, note: null
+    });
+    await load();
+  }
+
+  async function saveRemark() {
+    await sb.from('purchase_requests').update({
+      remark: remarkDraft.trim() || null,
+      remark_updated_at: new Date().toISOString(),
+      remark_updated_by: session.userId
+    }).eq('id', req.id);
+    await load();
+  }
+
+  async function saveItemRemark(itemId) {
+    await sb.from('purchase_items').update({
+      item_remark: (itemDrafts[itemId] || '').trim() || null,
+      item_remark_updated_at: new Date().toISOString(),
+      item_remark_updated_by: session.userId
+    }).eq('id', itemId);
+    await load();
+  }
+
+  if (loading || !req) return <Spinner />;
+
+  return (
+    <div className="pb-10">
+      <button onClick={onBack} className="text-sm text-ink/50 underline mb-4">← 返回列表</button>
+
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-xl font-black font-mono">{req.request_no}</p>
+        {req.urgent && <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-brick text-white">急件</span>}
+      </div>
+      <p className="text-sm text-ink/40 mb-5">{req.store} · {usersMap[req.applicant_id] || '—'} · {fmtDateTime(req.created_at)}</p>
+
+      <Card className="p-4 mb-4">
+        <p className="text-sm font-bold mb-3">狀態</p>
+        <div className="flex flex-wrap gap-2">
+          {STATUS_ORDER.map(s => (
+            <button key={s} onClick={() => changeStatus(s)}
+              className={cls('px-3 py-2 rounded-lg text-sm font-medium border transition',
+                req.status === s ? 'text-white border-transparent' : 'border-ink/15 text-ink/60 hover:border-ink/30')}
+              style={req.status === s ? { background: STATUS_META[s].color } : {}}>
+              {STATUS_META[s].label}
+            </button>
+          ))}
+        </div>
+        {conflictMsg && <p className="text-brick text-sm mt-2">{conflictMsg}</p>}
+      </Card>
+
+      <Card className="p-4 mb-4">
+        <p className="text-sm font-bold mb-3">商品清單</p>
+        <div className="flex flex-col gap-3">
+          {items.map(it => (
+            <div key={it.id} className="border-b border-black/5 last:border-0 pb-3 last:pb-0">
+              <div className="flex items-center justify-between">
+                <p className="text-[15px] font-medium">{it.product_name}</p>
+                <p className="text-sm text-ink/50">× {it.quantity}</p>
+              </div>
+              {it.source && <p className="text-xs text-ink/40 mt-0.5">來源：{it.source}{it.url ? '　' : ''}{it.url && <a href={it.url} target="_blank" rel="noreferrer" className="underline">連結</a>}</p>}
+              <div className="flex items-center gap-2 mt-2">
+                <input value={itemDrafts[it.id] || ''} onChange={e => setItemDrafts(d => ({ ...d, [it.id]: e.target.value }))}
+                  placeholder="商品備註（如：缺貨、改其他品牌）"
+                  className="flex-1 text-sm px-3 py-2 rounded-lg border border-ink/15" />
+                <button onClick={() => saveItemRemark(it.id)} className="text-sm text-ink/60 underline whitespace-nowrap">儲存</button>
+              </div>
+              {it.item_remark_updated_at && (
+                <p className="text-[11px] text-ink/30 mt-1">
+                  {usersMap[it.item_remark_updated_by] || '—'} 於 {fmtDateTime(it.item_remark_updated_at)} 更新
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card className="p-4 mb-4">
+        <p className="text-sm font-bold mb-3">整單備註</p>
+        <textarea value={remarkDraft} onChange={e => setRemarkDraft(e.target.value)} rows={3}
+          className="w-full px-3 py-2.5 rounded-lg border border-ink/15 text-[15px] resize-none mb-2" />
+        <Button variant="subtle" onClick={saveRemark}>儲存備註</Button>
+        {req.remark_updated_at && (
+          <p className="text-[11px] text-ink/30 mt-2">
+            {usersMap[req.remark_updated_by] || '—'} 於 {fmtDateTime(req.remark_updated_at)} 更新
+          </p>
+        )}
+      </Card>
+
+      <Card className="p-4">
+        <p className="text-sm font-bold mb-3">狀態異動紀錄</p>
+        {logs.length === 0 ? <p className="text-sm text-ink/30">尚無紀錄</p> : (
+          <div className="flex flex-col gap-2">
+            {logs.map(l => (
+              <div key={l.id} className="text-sm text-ink/60">
+                <span className="font-medium text-ink">{usersMap[l.operator_id] || '—'}</span>
+                {' '}將狀態改為 <span className="font-medium">{STATUS_META[l.new_status]?.label || l.new_status}</span>
+                {l.note ? `（${l.note}）` : ''}
+                <span className="text-ink/30"> · {fmtDateTime(l.created_at)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 /* ================= App Shell ================= */
 function NavBar({ session, screen, onNavigate, onLogout }) {
   const isAdmin = session.role === 'admin';
@@ -691,7 +987,7 @@ function App() {
       <div className="max-w-4xl mx-auto px-4 py-5">
         {screen === 'dashboard' && <Dashboard session={session} onNavigate={setScreen} />}
         {screen === 'new' && <NewRequest session={session} onNavigate={setScreen} />}
-        {screen === 'manage' && <Placeholder title="採購管理" />}
+        {screen === 'manage' && <ManagePage session={session} onNavigate={setScreen} onExportClick={() => alert('匯出功能即將推出')} />}
         {screen === 'products' && <Placeholder title="商品管理" />}
       </div>
     </div>
