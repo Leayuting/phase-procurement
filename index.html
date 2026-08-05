@@ -436,6 +436,8 @@ function NewRequest({ session, onNavigate }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [successNo, setSuccessNo] = useState(null);
+  const [storeStaff, setStoreStaff] = useState([]);
+  const [applicantId, setApplicantId] = useState(session.userId);
 
   useEffect(() => {
     sb.from('products').select('*').eq('enabled', true).order('category').order('name')
@@ -444,6 +446,11 @@ function NewRequest({ session, onNavigate }) {
         setLoadingProducts(false);
       });
   }, []);
+
+  useEffect(() => {
+    sb.from('users').select('id,name').eq('store', session.store).eq('role', 'staff').eq('enabled', true).order('name')
+      .then(({ data }) => setStoreStaff(data || []));
+  }, [session.store]);
 
   useEffect(() => {
     if (!successNo) return;
@@ -499,7 +506,7 @@ function NewRequest({ session, onNavigate }) {
     setSubmitting(true);
     const { data, error: rpcError } = await sb.rpc('create_purchase_request', {
       p_store: session.store,
-      p_applicant_id: session.userId,
+      p_applicant_id: applicantId,
       p_urgent: urgent,
       p_remark: remark.trim() || null,
       p_items: cart.map(it => ({
@@ -532,8 +539,11 @@ function NewRequest({ session, onNavigate }) {
 
       <Card className="p-4 mb-4">
         <div className="flex items-center justify-between mb-3">
-          <span className="text-sm text-ink/50">申請人</span>
-          <span className="text-sm font-medium">{session.name}</span>
+          <span className="text-sm text-ink/50">送單人員</span>
+          <select value={applicantId} onChange={e => setApplicantId(e.target.value)}
+            className="text-sm font-medium border border-ink/15 rounded-lg px-2.5 py-1.5 bg-white">
+            {storeStaff.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
         </div>
         <div className="flex items-center justify-between mb-3">
           <span className="text-sm text-ink/50">門市</span>
