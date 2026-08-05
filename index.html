@@ -621,8 +621,13 @@ function NewRequest({ session, onNavigate }) {
       {error && <p className="text-brick text-sm mb-2">{error}</p>}
 
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent safe-bottom">
-        <Button variant="brick" disabled={submitting} onClick={submit} className="w-full max-w-md mx-auto flex">
+        <Button variant="brick" disabled={submitting} onClick={submit} className="w-full max-w-md mx-auto flex relative">
           {submitting ? '送出中…' : '送出採購'}
+          {!submitting && cart.length > 0 && (
+            <span className="absolute -top-2 -right-2 min-w-[22px] h-[22px] px-1 rounded-full bg-ink text-cream text-xs font-bold flex items-center justify-center border-2 border-cream">
+              {cart.length}
+            </span>
+          )}
         </Button>
       </div>
     </div>
