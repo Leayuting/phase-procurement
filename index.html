@@ -59,10 +59,6 @@ const STORES = ['中山店', '勤美店', '水湳店'];
 const PIN_LENGTH = 8;
 const SESSION_KEY = 'phase_procurement_staff_session';
 const SCREEN_KEY = 'phase_procurement_screen';
-const SCREENS_BY_ROLE = {
-  staff: ['dashboard', 'new'],
-  admin: ['dashboard', 'manage', 'products', 'account']
-};
 
 const STATUS_META = {
   pending:   { label: '待採購', color: '#A9754A' },
@@ -1288,8 +1284,8 @@ function ProductsPage() {
           className={cls('px-4 py-2 rounded-lg text-sm font-medium', tab === 'products' ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
           商品
         </button>
-        <button onClick={() => setTab('staff')}
-          className={cls('px-4 py-2 rounded-lg text-sm font-medium', tab === 'staff' ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
+        <button onClick={() => setTab('pin')}
+          className={cls('px-4 py-2 rounded-lg text-sm font-medium', tab === 'pin' ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
           門市登入 PIN
         </button>
       </div>
@@ -1525,7 +1521,7 @@ function App() {
 
   useEffect(() => {
     if (!session) return;
-    const allowed = SCREENS_BY_ROLE[session.role] || ['dashboard'];
+    const allowed = navItemsFor(session).map(it => it.id);
     if (!allowed.includes(screen)) setScreen('dashboard');
   }, [session]);
 
