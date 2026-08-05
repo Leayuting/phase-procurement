@@ -418,7 +418,7 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
       )}
 
       {!isAdmin && (
-        <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent safe-bottom">
+        <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent md:safe-bottom">
           <Button variant="brick" className="w-full max-w-md mx-auto flex" onClick={() => onNavigate('new')}>
             快速新增採購
           </Button>
@@ -707,7 +707,7 @@ function NewRequest({ session, onNavigate }) {
         className="w-full px-4 py-3 rounded-xl border border-ink/15 bg-white text-[15px] resize-none mb-2" />
       {error && <p className="text-brick text-sm mb-2">{error}</p>}
 
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent safe-bottom">
+      <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent md:safe-bottom">
         <Button variant="brick" disabled={submitting} onClick={submit} className="w-full max-w-md mx-auto flex relative">
           {submitting ? '送出中…' : '送出採購'}
           {!submitting && cart.length > 0 && (
@@ -1463,20 +1463,24 @@ function AccountPage({ session }) {
 }
 
 /* ================= App Shell ================= */
-function NavBar({ session, screen, onNavigate, onLogout }) {
+function navItemsFor(session) {
   const isAdmin = session.role === 'admin';
-  const items = [
+  return [
     { id: 'dashboard', label: 'Dashboard' },
     ...(!isAdmin ? [{ id: 'new', label: '新增採購' }] : []),
     ...(isAdmin ? [{ id: 'manage', label: '採購管理' }] : []),
     ...(isAdmin ? [{ id: 'products', label: '商品管理' }] : []),
     ...(isAdmin ? [{ id: 'account', label: '帳號設定' }] : [])
   ];
+}
+
+function NavBar({ session, screen, onNavigate, onLogout }) {
+  const items = navItemsFor(session);
   return (
     <div className="sticky top-0 z-40 bg-cream/90 backdrop-blur border-b border-black/5">
       <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
         <p className="font-black tracking-tight">PHASE 採購</p>
-        <div className="flex items-center gap-1">
+        <div className="hidden md:flex items-center gap-1">
           {items.map(it => (
             <button key={it.id} onClick={() => onNavigate(it.id)}
               className={cls('px-3 py-2 rounded-lg text-sm font-medium transition',
@@ -1486,6 +1490,24 @@ function NavBar({ session, screen, onNavigate, onLogout }) {
           ))}
           <button onClick={onLogout} className="ml-2 px-3 py-2 rounded-lg text-sm text-ink/40 hover:bg-black/5">登出</button>
         </div>
+        <button onClick={onLogout} className="md:hidden px-3 py-2 rounded-lg text-sm text-ink/40">登出</button>
+      </div>
+    </div>
+  );
+}
+
+function MobileTabBar({ session, screen, onNavigate }) {
+  const items = navItemsFor(session);
+  return (
+    <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-cream/95 backdrop-blur border-t border-black/5 safe-bottom">
+      <div className="grid h-14" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
+        {items.map(it => (
+          <button key={it.id} onClick={() => onNavigate(it.id)}
+            className={cls('flex items-center justify-center text-[11px] font-medium leading-tight whitespace-nowrap overflow-hidden text-ellipsis px-1',
+              screen === it.id ? 'text-brick font-bold' : 'text-ink/50')}>
+            {it.label}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -1563,13 +1585,14 @@ function App() {
   return (
     <div className="min-h-screen">
       <NavBar session={session} screen={screen} onNavigate={setScreen} onLogout={handleLogout} />
-      <div className="max-w-4xl mx-auto px-4 py-5">
+      <div className="max-w-4xl mx-auto px-4 py-5 pb-20 md:pb-5">
         {screen === 'dashboard' && <Dashboard session={session} onNavigate={setScreen} onOpenRequest={openRequest} onOpenFiltered={openManageFiltered} />}
         {screen === 'new' && <NewRequest session={session} onNavigate={setScreen} />}
         {screen === 'manage' && <ManagePage session={session} onNavigate={setScreen} initialRequestId={pendingDetailId} initialFilters={pendingFilters} />}
         {screen === 'products' && <ProductsPage />}
         {screen === 'account' && <AccountPage session={session} />}
       </div>
+      <MobileTabBar session={session} screen={screen} onNavigate={setScreen} />
     </div>
   );
 }
