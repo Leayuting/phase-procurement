@@ -51,6 +51,11 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const STORES = ['中山店', '勤美店', '水湳店'];
 const PIN_LENGTH = 8;
 const SESSION_KEY = 'phase_procurement_staff_session';
+const SCREEN_KEY = 'phase_procurement_screen';
+const SCREENS_BY_ROLE = {
+  staff: ['dashboard', 'new'],
+  admin: ['dashboard', 'manage', 'products', 'account']
+};
 
 const STATUS_META = {
   pending:   { label: '待採購', color: '#A9754A' },
@@ -1359,7 +1364,12 @@ function NavBar({ session, screen, onNavigate, onLogout }) {
 
 function App() {
   const [session, setSession] = useState(undefined); // undefined = loading, null = logged out
-  const [screen, setScreen] = useState('dashboard');
+  const [screen, setScreenState] = useState(() => localStorage.getItem(SCREEN_KEY) || 'dashboard');
+
+  function setScreen(next) {
+    localStorage.setItem(SCREEN_KEY, next);
+    setScreenState(next);
+  }
 
   const resolveAdminSession = useCallback(async () => {
     const { data: { session: authSession } } = await sb.auth.getSession();
@@ -1381,6 +1391,12 @@ function App() {
     resolveAdminSession();
   }, [resolveAdminSession]);
 
+  useEffect(() => {
+    if (!session) return;
+    const allowed = SCREENS_BY_ROLE[session.role] || ['dashboard'];
+    if (!allowed.includes(screen)) setScreen('dashboard');
+  }, [session]);
+
   function handleStaffLogin(user) {
     const s = { type: 'staff', role: 'staff', userId: user.id, name: user.name, store: user.store };
     localStorage.setItem(SESSION_KEY, JSON.stringify({ userId: user.id, name: user.name, store: user.store }));
@@ -1393,9 +1409,10 @@ function App() {
   }
   async function handleLogout() {
     localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(SCREEN_KEY);
     if (session && session.type === 'admin') await sb.auth.signOut();
     setSession(null);
-    setScreen('dashboard');
+    setScreenState('dashboard');
   }
 
   if (session === undefined) return <div className="min-h-screen flex items-center justify-center"><Spinner /></div>;
