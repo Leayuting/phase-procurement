@@ -71,7 +71,6 @@ const STATUS_META = {
   done:      { label: '完成',   color: '#4E5747' },
   cancelled: { label: '取消',   color: '#8C8378' }
 };
-const SIMPLE_STATUS = (status) => (status === 'done' ? '已完成' : '處理中');
 
 /* ================= 小工具 ================= */
 async function sha256Hex(text) {
@@ -308,7 +307,7 @@ function StaffRequestDetail({ requestId, onBack }) {
       <Card className="p-4 mb-4">
         <div className="flex items-center justify-between">
           <span className="text-sm text-ink/50">狀態</span>
-          <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-black/5 text-ink/70">{SIMPLE_STATUS(req.status)}</span>
+          <StatusPill status={req.status} />
         </div>
       </Card>
 
@@ -411,9 +410,7 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
                 <p className="font-mono text-sm font-semibold truncate">{r.request_no}</p>
                 <p className="text-xs text-ink/40 mt-0.5">{isAdmin ? r.store + ' · ' : ''}{fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
               </div>
-              {isAdmin ? <StatusPill status={r.status} /> : (
-                <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-black/5 text-ink/70">{SIMPLE_STATUS(r.status)}</span>
-              )}
+              <StatusPill status={r.status} />
             </Card>
           ))}
           {rows.length === 0 && <p className="text-sm text-ink/40 text-center py-10">目前沒有採購紀錄</p>}
