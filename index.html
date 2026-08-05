@@ -49,6 +49,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const STORES = ['中山店', '勤美店', '水湳店'];
+const PIN_LENGTH = 8;
 const SESSION_KEY = 'phase_procurement_staff_session';
 
 const STATUS_META = {
@@ -109,7 +110,7 @@ function StaffPinPad({ store, staffList, onBack, onSuccess }) {
 
   async function submitPin(nextPin) {
     setError('');
-    if (nextPin.length < 4) return;
+    if (nextPin.length < PIN_LENGTH) return;
     setChecking(true);
     const hash = await sha256Hex(nextPin);
     setChecking(false);
@@ -125,9 +126,9 @@ function StaffPinPad({ store, staffList, onBack, onSuccess }) {
     if (checking) return;
     if (k === 'del') { setPin(p => p.slice(0, -1)); return; }
     setPin(p => {
-      if (p.length >= 4) return p;
+      if (p.length >= PIN_LENGTH) return p;
       const next = p + k;
-      if (next.length === 4) submitPin(next);
+      if (next.length === PIN_LENGTH) submitPin(next);
       return next;
     });
   }
@@ -145,9 +146,9 @@ function StaffPinPad({ store, staffList, onBack, onSuccess }) {
   return (
     <div className="w-full max-w-xs mx-auto text-center px-6">
       <p className="text-lg font-bold mb-1">{store}</p>
-      <p className="text-sm text-ink/50 mb-6">請輸入 4 位數 PIN 碼</p>
-      <div className="flex justify-center gap-4 mb-3">
-        {[0,1,2,3].map(i => (
+      <p className="text-sm text-ink/50 mb-6">請輸入 {PIN_LENGTH} 位數 PIN 碼</p>
+      <div className="flex justify-center gap-2 mb-3 flex-wrap">
+        {Array.from({ length: PIN_LENGTH }, (_, i) => i).map(i => (
           <div key={i} className={cls('w-3.5 h-3.5 rounded-full border border-ink', i < pin.length ? 'bg-ink' : 'bg-transparent')} />
         ))}
       </div>
@@ -1066,7 +1067,7 @@ function StaffForm({ store, onSave, onCancel }) {
 
   async function submit() {
     if (!name.trim()) { setErr('請填寫姓名'); return; }
-    if (!/^\d{4}$/.test(pin)) { setErr('PIN 需為 4 位數字'); return; }
+    if (!new RegExp(`^\\d{${PIN_LENGTH}}$`).test(pin)) { setErr(`PIN 需為 ${PIN_LENGTH} 位數字`); return; }
     onSave({ name: name.trim(), pin_hash: await sha256Hex(pin) });
   }
 
@@ -1075,8 +1076,8 @@ function StaffForm({ store, onSave, onCancel }) {
       <div className="flex flex-col gap-2.5 mb-2.5">
         <input placeholder="姓名" value={name} onChange={e => setName(e.target.value)}
           className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
-        <input placeholder="4 位數 PIN" value={pin} inputMode="numeric" maxLength={4}
-          onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+        <input placeholder={`${PIN_LENGTH} 位數 PIN`} value={pin} inputMode="numeric" maxLength={PIN_LENGTH}
+          onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, PIN_LENGTH))}
           className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
       </div>
       {err && <p className="text-brick text-sm mb-2">{err}</p>}
@@ -1092,14 +1093,14 @@ function ResetPinInline({ onSave, onCancel }) {
   const [pin, setPin] = useState('');
   const [err, setErr] = useState('');
   async function submit() {
-    if (!/^\d{4}$/.test(pin)) { setErr('PIN 需為 4 位數字'); return; }
+    if (!new RegExp(`^\\d{${PIN_LENGTH}}$`).test(pin)) { setErr(`PIN 需為 ${PIN_LENGTH} 位數字`); return; }
     onSave(await sha256Hex(pin));
   }
   return (
     <div className="flex items-center gap-2 mt-2">
-      <input placeholder="新 PIN（4 碼）" value={pin} inputMode="numeric" maxLength={4}
-        onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-        className="text-sm px-3 py-2 rounded-lg border border-ink/15 w-32" />
+      <input placeholder={`新 PIN（${PIN_LENGTH} 碼）`} value={pin} inputMode="numeric" maxLength={PIN_LENGTH}
+        onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, PIN_LENGTH))}
+        className="text-sm px-3 py-2 rounded-lg border border-ink/15 w-40" />
       <button onClick={submit} className="text-sm text-ink/60 underline">儲存</button>
       <button onClick={onCancel} className="text-sm text-ink/30 underline">取消</button>
       {err && <span className="text-brick text-xs">{err}</span>}
