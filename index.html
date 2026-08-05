@@ -1205,6 +1205,138 @@ function ProductsPage() {
   );
 }
 
+/* ================= 帳號設定（管理者） ================= */
+function ChangePasswordCard() {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setErr(''); setMsg('');
+    if (next.length < 6) { setErr('新密碼至少需要 6 碼'); return; }
+    if (next !== confirm) { setErr('兩次輸入的新密碼不一致'); return; }
+    setBusy(true);
+    const { data: { user } } = await sb.auth.getUser();
+    const { error: reauthError } = await sb.auth.signInWithPassword({ email: user.email, password: current });
+    if (reauthError) { setErr('目前密碼不正確'); setBusy(false); return; }
+    const { error: updateError } = await sb.auth.updateUser({ password: next });
+    setBusy(false);
+    if (updateError) { setErr('更新失敗，請稍後再試'); return; }
+    setMsg('密碼已更新');
+    setCurrent(''); setNext(''); setConfirm('');
+  }
+
+  return (
+    <Card className="p-4">
+      <p className="text-sm font-bold mb-3">修改密碼</p>
+      <div className="flex flex-col gap-2.5">
+        <input type="password" placeholder="目前密碼" value={current} onChange={e => setCurrent(e.target.value)}
+          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+        <input type="password" placeholder="新密碼（至少 6 碼）" value={next} onChange={e => setNext(e.target.value)}
+          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+        <input type="password" placeholder="確認新密碼" value={confirm} onChange={e => setConfirm(e.target.value)}
+          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+      </div>
+      {err && <p className="text-brick text-sm mt-2">{err}</p>}
+      {msg && <p className="text-sm mt-2 text-[#4E5747]">{msg}</p>}
+      <Button className="mt-3" disabled={busy} onClick={submit}>{busy ? '處理中…' : '更新密碼'}</Button>
+    </Card>
+  );
+}
+
+function AdminAccountsCard({ currentUserId }) {
+  const [admins, setAdmins] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await sb.from('users').select('*').eq('role', 'admin').order('name');
+    setAdmins(data || []);
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function toggleEnabled(u) {
+    await sb.from('users').update({ enabled: !u.enabled }).eq('id', u.id);
+    await load();
+  }
+
+  async function submit() {
+    setErr('');
+    if (!name.trim() || !email.trim() || !password) { setErr('請完整填寫欄位'); return; }
+    setBusy(true);
+    const { data: { session: authSession } } = await sb.auth.getSession();
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-create-admin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.access_token}` },
+      body: JSON.stringify({ name: name.trim(), email: email.trim(), password })
+    });
+    const body = await res.json();
+    setBusy(false);
+    if (!res.ok) { setErr(body.error || '新增失敗'); return; }
+    setName(''); setEmail(''); setPassword(''); setShowForm(false);
+    await load();
+  }
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm font-bold">管理者帳號</p>
+        <button onClick={() => setShowForm(s => !s)} className="text-sm text-ink/50 underline">
+          {showForm ? '取消' : '+ 新增管理者'}
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="flex flex-col gap-2.5 mb-4 pb-4 border-b border-black/5">
+          <input placeholder="姓名" value={name} onChange={e => setName(e.target.value)}
+            className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+          <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)}
+            className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+          <input type="password" placeholder="初始密碼（至少 6 碼）" value={password} onChange={e => setPassword(e.target.value)}
+            className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+          {err && <p className="text-brick text-sm">{err}</p>}
+          <Button disabled={busy} onClick={submit}>{busy ? '建立中…' : '建立帳號'}</Button>
+        </div>
+      )}
+
+      {loading ? <Spinner /> : (
+        <div className="flex flex-col gap-2">
+          {admins.map(a => (
+            <div key={a.id} className={cls('flex items-center justify-between', !a.enabled && 'opacity-50')}>
+              <span className="text-[15px]">{a.name}{a.id === currentUserId ? '（你自己）' : ''}</span>
+              {a.id !== currentUserId && (
+                <button onClick={() => toggleEnabled(a)} className={cls('text-sm underline', a.enabled ? 'text-brick' : 'text-ink/50')}>
+                  {a.enabled ? '停用' : '啟用'}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function AccountPage({ session }) {
+  return (
+    <div className="flex flex-col gap-4 max-w-md">
+      <p className="text-lg font-bold">帳號設定</p>
+      <ChangePasswordCard />
+      <AdminAccountsCard currentUserId={session.userId} />
+    </div>
+  );
+}
+
 /* ================= App Shell ================= */
 function NavBar({ session, screen, onNavigate, onLogout }) {
   const isAdmin = session.role === 'admin';
@@ -1212,7 +1344,8 @@ function NavBar({ session, screen, onNavigate, onLogout }) {
     { id: 'dashboard', label: 'Dashboard' },
     ...(!isAdmin ? [{ id: 'new', label: '新增採購' }] : []),
     ...(isAdmin ? [{ id: 'manage', label: '採購管理' }] : []),
-    ...(isAdmin ? [{ id: 'products', label: '商品管理' }] : [])
+    ...(isAdmin ? [{ id: 'products', label: '商品管理' }] : []),
+    ...(isAdmin ? [{ id: 'account', label: '帳號設定' }] : [])
   ];
   return (
     <div className="sticky top-0 z-40 bg-cream/90 backdrop-blur border-b border-black/5">
@@ -1240,7 +1373,7 @@ function App() {
   const resolveAdminSession = useCallback(async () => {
     const { data: { session: authSession } } = await sb.auth.getSession();
     if (!authSession) { setSession(null); return; }
-    const { data, error } = await sb.from('users').select('*').eq('auth_uid', authSession.user.id).single();
+    const { data, error } = await sb.from('users').select('*').eq('auth_uid', authSession.user.id).eq('enabled', true).single();
     if (error || !data) { await sb.auth.signOut(); setSession(null); return; }
     setSession({ type: 'admin', role: 'admin', userId: data.id, name: data.name });
   }, []);
@@ -1285,6 +1418,7 @@ function App() {
         {screen === 'new' && <NewRequest session={session} onNavigate={setScreen} />}
         {screen === 'manage' && <ManagePage session={session} onNavigate={setScreen} />}
         {screen === 'products' && <ProductsPage />}
+        {screen === 'account' && <AccountPage session={session} />}
       </div>
     </div>
   );
