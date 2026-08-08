@@ -268,16 +268,137 @@ function StatusPill({ status }) {
   );
 }
 
-function RequestItemsInline({ requestId, remark }) {
+/* ================= 公司信用卡：採購單內付款 ================= */
+const CARD_OPTIONS = ['永豐', '兆豐'];
+
+function ReconBadge({ status }) {
+  return (
+    <span className={cls('text-xs font-bold px-2 py-0.5 rounded-full',
+      status === 'reconciled' ? 'bg-black/5 text-ink/50' : 'bg-[#A9754A]/15 text-[#A9754A]')}>
+      {status === 'reconciled' ? '已對帳' : '待對帳'}
+    </span>
+  );
+}
+
+function buildPurchasePurpose(requestNo, items) {
+  const preview = (items || []).slice(0, 3).map(it => `${it.product_name} x${it.quantity}`).join('、');
+  const suffix = (items || []).length > 3 ? ` 等共${items.length}項` : '';
+  return `${requestNo}｜${preview}${suffix}`;
+}
+
+function PaymentForm({ onAdd, onCancel }) {
+  const [date, setDate] = useState(taipeiDateStr());
+  const [card, setCard] = useState('');
+  const [amount, setAmount] = useState('');
+  const [err, setErr] = useState('');
+
+  function submit() {
+    if (!card) { setErr('請選擇信用卡'); return; }
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0) { setErr('請輸入正確金額'); return; }
+    onAdd({ txn_date: date, card, amount: amt });
+  }
+
+  return (
+    <Card className="p-4 mt-2">
+      <div className="flex flex-col gap-2.5">
+        <input type="date" value={date} onChange={e => setDate(e.target.value)}
+          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+        <div className="flex gap-2">
+          {CARD_OPTIONS.map(c => (
+            <button key={c} type="button" onClick={() => setCard(c)}
+              className={cls('flex-1 py-2 rounded-lg border text-sm font-medium transition',
+                card === c ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/70')}>
+              {c}
+            </button>
+          ))}
+        </div>
+        <input type="number" inputMode="decimal" placeholder="金額" value={amount} onChange={e => setAmount(e.target.value)}
+          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+        {err && <p className="text-brick text-sm">{err}</p>}
+        <div className="flex gap-2">
+          <Button variant="subtle" className="flex-1" onClick={onCancel}>取消</Button>
+          <Button className="flex-1" onClick={submit}>儲存</Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function PaymentRow({ p, onDelete }) {
+  return (
+    <div className="flex items-center justify-between text-sm py-1.5">
+      <span className="text-ink/70">{p.txn_date}｜{p.card}</span>
+      <div className="flex items-center gap-2">
+        <span className="font-medium">${Math.round(p.amount).toLocaleString()}</span>
+        <ReconBadge status={p.recon_status} />
+        {p.recon_status === 'pending' && (
+          <button onClick={() => onDelete(p.id)} className="text-ink/30 hover:text-brick px-1">🗑️</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PurchasePayments({ request, items }) {
+  const [payments, setPayments] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+
+  const load = useCallback(() => {
+    sb.from('card_transactions').select('*').eq('purchase_request_id', request.id).order('txn_date', { ascending: false })
+      .then(({ data }) => setPayments(data || []));
+  }, [request.id]);
+  useEffect(() => { load(); }, [load]);
+
+  async function addPayment(fields) {
+    await sb.from('card_transactions').insert({
+      ...fields,
+      store: request.store,
+      purpose: buildPurchasePurpose(request.request_no, items),
+      source: 'purchase',
+      purchase_request_id: request.id,
+      registrant_name: request.applicant_name
+    });
+    setShowForm(false);
+    load();
+  }
+  async function deletePayment(id) {
+    await sb.from('card_transactions').delete().eq('id', id);
+    load();
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-sm font-bold">付款紀錄</p>
+        <button onClick={() => setShowForm(s => !s)} className="text-sm text-ink/50 underline">
+          {showForm ? '取消' : '＋新增付款'}
+        </button>
+      </div>
+      {showForm && <PaymentForm onAdd={addPayment} onCancel={() => setShowForm(false)} />}
+      {payments === null ? (
+        <p className="text-sm text-ink/30 py-1">載入中…</p>
+      ) : payments.length === 0 ? (
+        <p className="text-sm text-ink/30 py-1">尚無付款紀錄</p>
+      ) : (
+        <div className="divide-y divide-black/5">
+          {payments.map(p => <PaymentRow key={p.id} p={p} onDelete={deletePayment} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RequestItemsInline({ request }) {
   const [items, setItems] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
-    sb.from('purchase_items').select('*').eq('request_id', requestId).order('id').then(({ data }) => {
+    sb.from('purchase_items').select('*').eq('request_id', request.id).order('id').then(({ data }) => {
       if (!cancelled) setItems(data || []);
     });
     return () => { cancelled = true; };
-  }, [requestId]);
+  }, [request.id]);
 
   return (
     <div className="border-t border-black/5 mt-3 pt-3" onClick={e => e.stopPropagation()}>
@@ -295,7 +416,10 @@ function RequestItemsInline({ requestId, remark }) {
               {it.item_remark && <p className="text-xs text-ink/40 mt-0.5">備註：{it.item_remark}</p>}
             </div>
           ))}
-          {remark && <p className="text-xs text-ink/40 pt-1 border-t border-black/5 mt-1">整單備註：{remark}</p>}
+          {request.remark && <p className="text-xs text-ink/40 pt-1 border-t border-black/5 mt-1">整單備註：{request.remark}</p>}
+          <div className="border-t border-black/5 pt-2 mt-1">
+            <PurchasePayments request={request} items={items} />
+          </div>
         </div>
       )}
     </div>
@@ -374,7 +498,7 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
                 </div>
                 <StatusPill status={r.status} />
               </div>
-              {!isAdmin && expandedId === r.id && <RequestItemsInline requestId={r.id} remark={r.remark} />}
+              {!isAdmin && expandedId === r.id && <RequestItemsInline request={r} />}
             </Card>
           ))}
           {rows.length === 0 && <p className="text-sm text-ink/40 text-center py-10">目前沒有採購紀錄</p>}
@@ -1050,6 +1174,10 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
             </div>
           ))}
         </div>
+      </Card>
+
+      <Card className="p-4 mb-4">
+        <PurchasePayments request={req} items={items} />
       </Card>
 
       <Card className="p-4 mb-4">
