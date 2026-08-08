@@ -224,7 +224,7 @@ function LoginScreen({ onStaffLogin, onAdminLogin }) {
               </button>
             ))}
           </div>
-          <button onClick={() => setMode('admin')} className="mt-8 block mx-auto text-xs tracking-widest text-ink/30">管理者登入</button>
+          <button onClick={() => setMode('admin')} className="mt-8 block mx-auto text-xs tracking-widest text-ink/30">採購／管理者登入</button>
         </div>
       )}
 
@@ -236,7 +236,7 @@ function LoginScreen({ onStaffLogin, onAdminLogin }) {
 
       {mode === 'admin' && (
         <form onSubmit={submitAdmin} className="w-full max-w-xs px-6">
-          <p className="text-sm text-ink/50 mb-4 text-center">管理者登入</p>
+          <p className="text-sm text-ink/50 mb-4 text-center">採購／管理者登入</p>
           <input type="email" required placeholder="Email" value={adminEmail} onChange={e => setAdminEmail(e.target.value)}
             className="w-full mb-3 px-4 py-3 rounded-xl border border-ink/15 bg-white text-[15px]" />
           <input type="password" required placeholder="密碼" value={adminPw} onChange={e => setAdminPw(e.target.value)}
@@ -325,10 +325,10 @@ function PaymentForm({ onAdd, onCancel }) {
   );
 }
 
-function PaymentRow({ p, onDelete }) {
+function PaymentRow({ p, usersMap, onDelete }) {
   return (
     <div className="flex items-center justify-between text-sm py-1.5">
-      <span className="text-ink/70">{p.txn_date}｜{p.card}</span>
+      <span className="text-ink/70">{p.txn_date}｜{p.card}｜{(usersMap && usersMap[p.registrant_id]) || '—'}</span>
       <div className="flex items-center gap-2">
         <span className="font-medium">${Math.round(p.amount).toLocaleString()}</span>
         <ReconBadge status={p.recon_status} />
@@ -340,7 +340,7 @@ function PaymentRow({ p, onDelete }) {
   );
 }
 
-function PurchasePayments({ request, items }) {
+function PurchasePayments({ request, items, session, usersMap }) {
   const [payments, setPayments] = useState(null);
   const [showForm, setShowForm] = useState(false);
 
@@ -357,7 +357,7 @@ function PurchasePayments({ request, items }) {
       purpose: buildPurchasePurpose(request.request_no, items),
       source: 'purchase',
       purchase_request_id: request.id,
-      registrant_name: request.applicant_name
+      registrant_id: session.userId
     });
     setShowForm(false);
     load();
@@ -382,7 +382,7 @@ function PurchasePayments({ request, items }) {
         <p className="text-sm text-ink/30 py-1">尚無付款紀錄</p>
       ) : (
         <div className="divide-y divide-black/5">
-          {payments.map(p => <PaymentRow key={p.id} p={p} onDelete={deletePayment} />)}
+          {payments.map(p => <PaymentRow key={p.id} p={p} usersMap={usersMap} onDelete={deletePayment} />)}
         </div>
       )}
     </div>
@@ -417,9 +417,6 @@ function RequestItemsInline({ request }) {
             </div>
           ))}
           {request.remark && <p className="text-xs text-ink/40 pt-1 border-t border-black/5 mt-1">整單備註：{request.remark}</p>}
-          <div className="border-t border-black/5 pt-2 mt-1">
-            <PurchasePayments request={request} items={items} />
-          </div>
         </div>
       )}
     </div>
@@ -431,17 +428,18 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
   const [storeFilter, setStoreFilter] = useState('all');
-  const isAdmin = session.role === 'admin';
+  const isStaff = session.role === 'staff';
+  const canViewAll = session.role === 'admin' || session.role === 'purchaser';
 
   const load = useCallback(async () => {
     setLoading(true);
     let q = sb.from('purchase_requests').select('*').order('created_at', { ascending: false }).limit(50);
-    if (!isAdmin) q = q.eq('store', session.store);
+    if (isStaff) q = q.eq('store', session.store);
     else if (storeFilter !== 'all') q = q.eq('store', storeFilter);
     const { data, error } = await q;
     setRows(error ? [] : data);
     setLoading(false);
-  }, [isAdmin, session.store, storeFilter]);
+  }, [isStaff, session.store, storeFilter]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
@@ -465,9 +463,9 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
       <div className="flex items-center justify-between mb-4">
         <div>
           <p className="text-lg font-bold">Dashboard</p>
-          <p className="text-xs text-ink/40">{isAdmin ? '全部門市 · ' + session.name : session.store}</p>
+          <p className="text-xs text-ink/40">{canViewAll ? '全部門市 · ' + session.name : session.store}</p>
         </div>
-        {isAdmin && (
+        {canViewAll && (
           <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
             className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
             <option value="all">全部門市</option>
@@ -478,34 +476,34 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
 
       <div className="grid grid-cols-3 gap-2.5 mb-6">
         <StatCard num={stats.pendingToday} label="今日待處理"
-          onClick={isAdmin ? () => onOpenFiltered({ store: storeFilter, status: 'all', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
+          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'all', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
         <StatCard num={stats.buyToday} label="待採購"
-          onClick={isAdmin ? () => onOpenFiltered({ store: storeFilter, status: 'pending', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
+          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'pending', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
         <StatCard num={stats.doneToday} label="已完成"
-          onClick={isAdmin ? () => onOpenFiltered({ store: storeFilter, status: 'done', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
+          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'done', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
       </div>
 
       <p className="text-sm font-medium text-ink/60 mb-2">最近送出的採購</p>
       {loading ? <Spinner /> : (
         <div className="flex flex-col gap-2">
           {rows.slice(0, 12).map(r => (
-            <Card key={r.id} onClick={() => (isAdmin ? onOpenRequest(r.id) : setExpandedId(id => id === r.id ? null : r.id))}
+            <Card key={r.id} onClick={() => (canViewAll ? onOpenRequest(r.id) : setExpandedId(id => id === r.id ? null : r.id))}
               className="px-4 py-3 cursor-pointer hover:border-ink/20">
               <div className="flex items-center justify-between">
                 <div className="min-w-0">
                   <p className="font-mono text-sm font-semibold truncate">{r.request_no}</p>
-                  <p className="text-xs text-ink/40 mt-0.5">{isAdmin ? r.store + ' · ' : ''}{fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
+                  <p className="text-xs text-ink/40 mt-0.5">{canViewAll ? r.store + ' · ' : ''}{fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
                 </div>
                 <StatusPill status={r.status} />
               </div>
-              {!isAdmin && expandedId === r.id && <RequestItemsInline request={r} />}
+              {isStaff && expandedId === r.id && <RequestItemsInline request={r} />}
             </Card>
           ))}
           {rows.length === 0 && <p className="text-sm text-ink/40 text-center py-10">目前沒有採購紀錄</p>}
         </div>
       )}
 
-      {!isAdmin && (
+      {isStaff && (
         <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent md:safe-bottom">
           <Button variant="brick" className="w-full max-w-md mx-auto flex" onClick={() => onNavigate('new')}>
             快速新增採購
@@ -991,12 +989,14 @@ function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
     <div>
       <div className="flex items-center justify-between mb-4">
         <p className="text-lg font-bold">採購管理</p>
-        <div className="flex gap-2">
-          <Button variant="ghost" onClick={() => setShowSummary(true)}>本月統計</Button>
-          <Button variant="ghost" disabled={exporting || rows.length === 0} onClick={exportExcel}>
-            {exporting ? '匯出中…' : '匯出 Excel'}
-          </Button>
-        </div>
+        {session.role === 'admin' && (
+          <div className="flex gap-2">
+            <Button variant="ghost" onClick={() => setShowSummary(true)}>本月統計</Button>
+            <Button variant="ghost" disabled={exporting || rows.length === 0} onClick={exportExcel}>
+              {exporting ? '匯出中…' : '匯出 Excel'}
+            </Button>
+          </div>
+        )}
       </div>
       <ManageFilterBar filters={filters} onChange={setFilters} />
 
@@ -1061,6 +1061,7 @@ function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
 }
 
 function ManageDetail({ requestId, session, usersMap, onBack }) {
+  const canEdit = session.role === 'admin';
   const [req, setReq] = useState(null);
   const [items, setItems] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -1137,16 +1138,20 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
 
       <Card className="p-4 mb-4">
         <p className="text-sm font-bold mb-3">狀態</p>
-        <div className="flex flex-wrap gap-2">
-          {STATUS_ORDER.map(s => (
-            <button key={s} onClick={() => changeStatus(s)}
-              className={cls('px-3 py-2 rounded-lg text-sm font-medium border transition',
-                req.status === s ? 'text-white border-transparent' : 'border-ink/15 text-ink/60 hover:border-ink/30')}
-              style={req.status === s ? { background: STATUS_META[s].color } : {}}>
-              {STATUS_META[s].label}
-            </button>
-          ))}
-        </div>
+        {canEdit ? (
+          <div className="flex flex-wrap gap-2">
+            {STATUS_ORDER.map(s => (
+              <button key={s} onClick={() => changeStatus(s)}
+                className={cls('px-3 py-2 rounded-lg text-sm font-medium border transition',
+                  req.status === s ? 'text-white border-transparent' : 'border-ink/15 text-ink/60 hover:border-ink/30')}
+                style={req.status === s ? { background: STATUS_META[s].color } : {}}>
+                {STATUS_META[s].label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <StatusPill status={req.status} />
+        )}
         {conflictMsg && <p className="text-brick text-sm mt-2">{conflictMsg}</p>}
       </Card>
 
@@ -1160,12 +1165,16 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
                 <p className="text-sm text-ink/50">× {it.quantity}</p>
               </div>
               {it.source && <p className="text-xs text-ink/40 mt-0.5">來源：{it.source}{it.url ? '　' : ''}{it.url && <a href={it.url} target="_blank" rel="noreferrer" className="underline">連結</a>}</p>}
-              <div className="flex items-center gap-2 mt-2">
-                <input value={itemDrafts[it.id] || ''} onChange={e => setItemDrafts(d => ({ ...d, [it.id]: e.target.value }))}
-                  placeholder="商品備註（如：缺貨、改其他品牌）"
-                  className="flex-1 text-sm px-3 py-2 rounded-lg border border-ink/15" />
-                <button onClick={() => saveItemRemark(it.id)} className="text-sm text-ink/60 underline whitespace-nowrap">儲存</button>
-              </div>
+              {canEdit ? (
+                <div className="flex items-center gap-2 mt-2">
+                  <input value={itemDrafts[it.id] || ''} onChange={e => setItemDrafts(d => ({ ...d, [it.id]: e.target.value }))}
+                    placeholder="商品備註（如：缺貨、改其他品牌）"
+                    className="flex-1 text-sm px-3 py-2 rounded-lg border border-ink/15" />
+                  <button onClick={() => saveItemRemark(it.id)} className="text-sm text-ink/60 underline whitespace-nowrap">儲存</button>
+                </div>
+              ) : (
+                it.item_remark && <p className="text-xs text-ink/40 mt-2">備註：{it.item_remark}</p>
+              )}
               {it.item_remark_updated_at && (
                 <p className="text-[11px] text-ink/30 mt-1">
                   {usersMap[it.item_remark_updated_by] || '—'} 於 {fmtDateTime(it.item_remark_updated_at)} 更新
@@ -1177,14 +1186,20 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
       </Card>
 
       <Card className="p-4 mb-4">
-        <PurchasePayments request={req} items={items} />
+        <PurchasePayments request={req} items={items} session={session} usersMap={usersMap} />
       </Card>
 
       <Card className="p-4 mb-4">
         <p className="text-sm font-bold mb-3">整單備註</p>
-        <textarea value={remarkDraft} onChange={e => setRemarkDraft(e.target.value)} rows={3}
-          className="w-full px-3 py-2.5 rounded-lg border border-ink/15 text-[15px] resize-none mb-2" />
-        <Button variant="subtle" onClick={saveRemark}>儲存備註</Button>
+        {canEdit ? (
+          <React.Fragment>
+            <textarea value={remarkDraft} onChange={e => setRemarkDraft(e.target.value)} rows={3}
+              className="w-full px-3 py-2.5 rounded-lg border border-ink/15 text-[15px] resize-none mb-2" />
+            <Button variant="subtle" onClick={saveRemark}>儲存備註</Button>
+          </React.Fragment>
+        ) : (
+          <p className="text-sm text-ink/60">{req.remark || '（無）'}</p>
+        )}
         {req.remark_updated_at && (
           <p className="text-[11px] text-ink/30 mt-2">
             {usersMap[req.remark_updated_by] || '—'} 於 {fmtDateTime(req.remark_updated_at)} 更新
@@ -1207,6 +1222,461 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
           </div>
         )}
       </Card>
+    </div>
+  );
+}
+
+/* ================= 公司信用卡（採購／管理者） ================= */
+const SOURCE_LABEL = { purchase: '採購單付款', manual: '自行登記', admin_backfill: '管理者補登' };
+
+function ManualCardForm({ session, defaultStore, lockedCard, onSave, onCancel }) {
+  const [date, setDate] = useState(taipeiDateStr());
+  const [card, setCard] = useState(lockedCard || '');
+  const [amount, setAmount] = useState('');
+  const [purpose, setPurpose] = useState('');
+  const [store, setStore] = useState(defaultStore || STORES[0]);
+  const [err, setErr] = useState('');
+
+  function submit() {
+    if (!card) { setErr('請選擇信用卡'); return; }
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0) { setErr('請輸入正確金額'); return; }
+    if (!purpose.trim()) { setErr('請填寫消費用途'); return; }
+    onSave({ txn_date: date, card, amount: amt, purpose: purpose.trim(), store });
+  }
+
+  return (
+    <Card className="p-4 mb-3">
+      <div className="flex flex-col gap-2.5">
+        <input type="date" value={date} onChange={e => setDate(e.target.value)}
+          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+        {!lockedCard && (
+          <div className="flex gap-2">
+            {CARD_OPTIONS.map(c => (
+              <button key={c} type="button" onClick={() => setCard(c)}
+                className={cls('flex-1 py-2 rounded-lg border text-sm font-medium transition',
+                  card === c ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/70')}>
+                {c}
+              </button>
+            ))}
+          </div>
+        )}
+        <input type="number" inputMode="decimal" placeholder="金額" value={amount} onChange={e => setAmount(e.target.value)}
+          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+        <input placeholder="消費用途" value={purpose} onChange={e => setPurpose(e.target.value)}
+          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+        <select value={store} onChange={e => setStore(e.target.value)}
+          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]">
+          {STORES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        {err && <p className="text-brick text-sm">{err}</p>}
+        <div className="flex gap-2">
+          <Button variant="subtle" className="flex-1" onClick={onCancel}>取消</Button>
+          <Button className="flex-1" onClick={submit}>儲存</Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function monthRangeStrs(yearMonth) {
+  const [y, m] = yearMonth.split('-').map(Number);
+  const start = `${y}-${String(m).padStart(2, '0')}-01`;
+  const endDate = new Date(Date.UTC(y, m, 1));
+  const end = `${endDate.getUTCFullYear()}-${String(endDate.getUTCMonth() + 1).padStart(2, '0')}-01`;
+  return { start, end };
+}
+function currentYearMonth() {
+  const t = taipeiNow();
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function CardTransactionList({ session, onOpenRequest }) {
+  const [filters, setFilters] = useState(() => ({ month: currentYearMonth(), card: 'all', store: 'all', recon: 'all' }));
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [usersMap, setUsersMap] = useState({});
+  const [expandedId, setExpandedId] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+
+  useEffect(() => {
+    sb.from('users').select('id,name').then(({ data }) => {
+      const m = {};
+      (data || []).forEach(u => { m[u.id] = u.name; });
+      setUsersMap(m);
+    });
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { start, end } = monthRangeStrs(filters.month);
+    let q = sb.from('card_transactions').select('*').gte('txn_date', start).lt('txn_date', end).order('txn_date', { ascending: false });
+    if (filters.card !== 'all') q = q.eq('card', filters.card);
+    if (filters.store !== 'all') q = q.eq('store', filters.store);
+    if (filters.recon !== 'all') q = q.eq('recon_status', filters.recon);
+    const { data, error } = await q;
+    setRows(error ? [] : data || []);
+    setLoading(false);
+  }, [filters]);
+  useEffect(() => { load(); }, [load]);
+
+  async function addManual(fields) {
+    await sb.from('card_transactions').insert({ ...fields, source: 'manual', registrant_id: session.userId });
+    setShowForm(false);
+    load();
+  }
+  async function deleteRow(id) {
+    await sb.from('card_transactions').delete().eq('id', id);
+    load();
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm text-ink/50">刷卡紀錄</p>
+        <Button variant="brick" onClick={() => setShowForm(s => !s)}>{showForm ? '取消' : '＋新增刷卡紀錄'}</Button>
+      </div>
+      {showForm && <ManualCardForm session={session} defaultStore={session.store} onSave={addManual} onCancel={() => setShowForm(false)} />}
+
+      <Card className="p-3 mb-3 flex flex-wrap gap-2 items-center">
+        <input type="month" value={filters.month} onChange={e => setFilters(f => ({ ...f, month: e.target.value }))}
+          className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
+        <select value={filters.card} onChange={e => setFilters(f => ({ ...f, card: e.target.value }))}
+          className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
+          <option value="all">全部卡別</option>
+          {CARD_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select value={filters.store} onChange={e => setFilters(f => ({ ...f, store: e.target.value }))}
+          className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
+          <option value="all">全部門店</option>
+          {STORES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select value={filters.recon} onChange={e => setFilters(f => ({ ...f, recon: e.target.value }))}
+          className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
+          <option value="all">全部對帳狀態</option>
+          <option value="pending">待對帳</option>
+          <option value="reconciled">已對帳</option>
+        </select>
+      </Card>
+
+      {loading ? <Spinner /> : rows.length === 0 ? (
+        <p className="text-sm text-ink/40 text-center py-16">沒有符合條件的刷卡紀錄</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {rows.map(r => (
+            <Card key={r.id} className="px-4 py-3 cursor-pointer" onClick={() => setExpandedId(id => id === r.id ? null : r.id)}>
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">{r.txn_date}｜{r.card}</p>
+                  <p className="text-xs text-ink/40 truncate mt-0.5">{r.purpose || '（無用途說明）'}</p>
+                </div>
+                <div className="text-right shrink-0 ml-2">
+                  <p className="font-bold">${Math.round(r.amount).toLocaleString()}</p>
+                  <ReconBadge status={r.recon_status} />
+                </div>
+              </div>
+              {expandedId === r.id && (
+                <div className="border-t border-black/5 mt-3 pt-3 text-sm text-ink/60 flex flex-col gap-1.5" onClick={e => e.stopPropagation()}>
+                  <p>費用歸屬：{r.store}</p>
+                  <p>登記人：{usersMap[r.registrant_id] || '—'}</p>
+                  <p>來源：{SOURCE_LABEL[r.source] || r.source}</p>
+                  {r.purchase_request_id && (
+                    <button onClick={() => onOpenRequest(r.purchase_request_id)} className="text-left underline text-ink/70">查看原採購單</button>
+                  )}
+                  {r.recon_status === 'pending' && (
+                    <button onClick={() => deleteRow(r.id)} className="text-left underline text-brick mt-1">刪除這筆</button>
+                  )}
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CardReconciliation({ session }) {
+  const [card, setCard] = useState(CARD_OPTIONS[0]);
+  const [month, setMonth] = useState(currentYearMonth());
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [usersMap, setUsersMap] = useState({});
+  const [billTotal, setBillTotal] = useState('');
+  const [billSaved, setBillSaved] = useState(null);
+  const [showBackfill, setShowBackfill] = useState(false);
+
+  useEffect(() => {
+    sb.from('users').select('id,name').then(({ data }) => {
+      const m = {};
+      (data || []).forEach(u => { m[u.id] = u.name; });
+      setUsersMap(m);
+    });
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { start, end } = monthRangeStrs(month);
+    const [{ data: txns }, { data: stmt }] = await Promise.all([
+      sb.from('card_transactions').select('*').eq('card', card).gte('txn_date', start).lt('txn_date', end).order('txn_date', { ascending: false }),
+      sb.from('card_statements').select('*').eq('card', card).eq('year_month', month).maybeSingle()
+    ]);
+    setRows(txns || []);
+    setBillSaved(stmt || null);
+    setBillTotal(stmt ? String(stmt.bill_total) : '');
+    setLoading(false);
+  }, [card, month]);
+  useEffect(() => { load(); }, [load]);
+
+  const systemTotal = useMemo(() => rows.reduce((s, r) => s + Number(r.amount), 0), [rows]);
+  const pendingCount = useMemo(() => rows.filter(r => r.recon_status === 'pending').length, [rows]);
+  const diff = billSaved ? Number(billSaved.bill_total) - systemTotal : null;
+
+  async function saveBill() {
+    const amt = parseFloat(billTotal);
+    if (!amt) return;
+    await sb.from('card_statements').upsert(
+      { card, year_month: month, bill_total: amt, entered_by: session.userId, entered_at: new Date().toISOString() },
+      { onConflict: 'card,year_month' }
+    );
+    load();
+  }
+  async function markReconciled(id) {
+    await sb.from('card_transactions').update({
+      recon_status: 'reconciled', reconciled_at: new Date().toISOString(), reconciled_by: session.userId
+    }).eq('id', id);
+    load();
+  }
+  async function addBackfill(fields) {
+    await sb.from('card_transactions').insert({
+      ...fields, card, source: 'admin_backfill', registrant_id: session.userId,
+      recon_status: 'reconciled', reconciled_at: new Date().toISOString(), reconciled_by: session.userId
+    });
+    setShowBackfill(false);
+    load();
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        {CARD_OPTIONS.map(c => (
+          <button key={c} onClick={() => setCard(c)}
+            className={cls('px-4 py-2 rounded-lg text-sm font-medium', card === c ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
+            {c}
+          </button>
+        ))}
+        <input type="month" value={month} onChange={e => setMonth(e.target.value)}
+          className="ml-auto text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
+      </div>
+
+      <Card className="p-4 mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm text-ink/50">帳單總額</span>
+          <div className="flex items-center gap-2">
+            <input type="number" inputMode="decimal" value={billTotal} onChange={e => setBillTotal(e.target.value)} placeholder="輸入帳單金額"
+              className="w-32 text-right text-sm border border-ink/15 rounded-lg px-2 py-1.5" />
+            <button onClick={saveBill} className="text-sm text-ink/60 underline">儲存</button>
+          </div>
+        </div>
+        {!loading && (
+          <div className="grid grid-cols-3 gap-2.5 mt-3">
+            <StatCard num={'$' + systemTotal.toLocaleString()} label="系統登記總額" />
+            <StatCard num={diff === null ? '—' : ('$' + diff.toLocaleString())} label="差額" />
+            <StatCard num={pendingCount} label="待對帳筆數" />
+          </div>
+        )}
+      </Card>
+
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-sm font-bold">逐筆明細</p>
+        <button onClick={() => setShowBackfill(s => !s)} className="text-sm text-ink/50 underline">
+          {showBackfill ? '取消' : '＋補登刷卡紀錄'}
+        </button>
+      </div>
+      {showBackfill && <ManualCardForm session={session} lockedCard={card} onSave={addBackfill} onCancel={() => setShowBackfill(false)} />}
+
+      {loading ? <Spinner /> : rows.length === 0 ? (
+        <p className="text-sm text-ink/40 text-center py-10">這期沒有刷卡紀錄</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {rows.map(r => (
+            <Card key={r.id} className="px-4 py-3">
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">{r.txn_date}｜{r.purpose || '（無用途說明）'}</p>
+                  <p className="text-xs text-ink/40 mt-0.5">{r.store} · {usersMap[r.registrant_id] || '—'} · {SOURCE_LABEL[r.source] || r.source}</p>
+                </div>
+                <div className="text-right shrink-0 ml-2 flex flex-col items-end gap-1">
+                  <span className="font-bold">${Math.round(r.amount).toLocaleString()}</span>
+                  {r.recon_status === 'pending' ? (
+                    <button onClick={() => markReconciled(r.id)} className="text-xs text-[#4E5747] font-bold underline">✓ 已對帳</button>
+                  ) : <ReconBadge status="reconciled" />}
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RepaymentConfirmForm({ defaultAmount, onSave, onCancel }) {
+  const [date, setDate] = useState(taipeiDateStr());
+  const [amount, setAmount] = useState(String(Math.round(defaultAmount)));
+  const [err, setErr] = useState('');
+  function submit() {
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0) { setErr('請輸入正確金額'); return; }
+    onSave({ received_date: date, received_amount: amt });
+  }
+  return (
+    <div className="border-t border-black/5 mt-3 pt-3 flex flex-col gap-2">
+      <input type="date" value={date} onChange={e => setDate(e.target.value)} className="px-3 py-2 rounded-lg border border-ink/15 text-sm" />
+      <input type="number" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="收款金額"
+        className="px-3 py-2 rounded-lg border border-ink/15 text-sm" />
+      {err && <p className="text-brick text-xs">{err}</p>}
+      <div className="flex gap-2">
+        <Button variant="subtle" className="flex-1" onClick={onCancel}>取消</Button>
+        <Button className="flex-1" onClick={submit}>確認</Button>
+      </div>
+    </div>
+  );
+}
+
+function StoreStats({ session }) {
+  const [month, setMonth] = useState(currentYearMonth());
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [repayments, setRepayments] = useState({});
+  const [expandedStore, setExpandedStore] = useState(null);
+  const [confirmingStore, setConfirmingStore] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { start, end } = monthRangeStrs(month);
+    const [{ data: txns }, { data: rep }] = await Promise.all([
+      sb.from('card_transactions').select('*').gte('txn_date', start).lt('txn_date', end),
+      sb.from('store_repayments').select('*').eq('year_month', month)
+    ]);
+    setRows(txns || []);
+    const repMap = {};
+    (rep || []).forEach(r => { repMap[r.store] = r; });
+    setRepayments(repMap);
+    setLoading(false);
+  }, [month]);
+  useEffect(() => { load(); }, [load]);
+
+  const totalsByStore = useMemo(() => {
+    const m = {};
+    STORES.forEach(s => { m[s] = 0; });
+    rows.forEach(r => { m[r.store] = (m[r.store] || 0) + Number(r.amount); });
+    return m;
+  }, [rows]);
+
+  async function confirmReceived(store, fields) {
+    await sb.from('store_repayments').upsert({
+      store, year_month: month, status: 'received',
+      received_date: fields.received_date, received_amount: fields.received_amount,
+      confirmed_by: session.userId, confirmed_at: new Date().toISOString()
+    }, { onConflict: 'store,year_month' });
+    setConfirmingStore(null);
+    load();
+  }
+
+  return (
+    <div>
+      <input type="month" value={month} onChange={e => setMonth(e.target.value)}
+        className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white mb-4" />
+
+      {loading ? <Spinner /> : (
+        <div className="flex flex-col gap-2 mb-6">
+          {STORES.map(store => (
+            <Card key={store} className="p-4 cursor-pointer" onClick={() => setExpandedStore(s => s === store ? null : store)}>
+              <div className="flex items-center justify-between">
+                <span className="font-medium">{store}</span>
+                <span className="font-bold">${Math.round(totalsByStore[store] || 0).toLocaleString()}</span>
+              </div>
+              {expandedStore === store && (
+                <div className="border-t border-black/5 mt-3 pt-3 flex flex-col gap-1.5" onClick={e => e.stopPropagation()}>
+                  {rows.filter(r => r.store === store).length === 0 ? (
+                    <p className="text-sm text-ink/30">這期沒有刷卡紀錄</p>
+                  ) : rows.filter(r => r.store === store).map(r => (
+                    <div key={r.id} className="flex items-center justify-between text-sm text-ink/60">
+                      <span>{r.txn_date}｜{r.card}｜{r.purpose || '（無用途說明）'}</span>
+                      <span>${Math.round(r.amount).toLocaleString()}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <p className="text-sm font-bold mb-2">門店代刷款</p>
+      <div className="flex flex-col gap-2">
+        {['勤美店', '水湳店'].map(store => {
+          const rep = repayments[store];
+          const received = rep && rep.status === 'received';
+          return (
+            <Card key={store} className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium">{store}</p>
+                  <p className="text-sm text-ink/50 mt-0.5">本月代刷金額：${Math.round(totalsByStore[store] || 0).toLocaleString()}</p>
+                </div>
+                <div className="text-right">
+                  {received ? (
+                    <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-black/5 text-ink/50">已收款</span>
+                  ) : (
+                    <button onClick={() => setConfirmingStore(s => s === store ? null : store)} className="text-sm text-ink/60 underline">確認已收款</button>
+                  )}
+                </div>
+              </div>
+              {received && (
+                <p className="text-[11px] text-ink/30 mt-2">
+                  {fmtDateTime(rep.confirmed_at)} 收款 ${Math.round(rep.received_amount).toLocaleString()}（{rep.received_date}）
+                </p>
+              )}
+              {confirmingStore === store && !received && (
+                <RepaymentConfirmForm defaultAmount={totalsByStore[store] || 0}
+                  onSave={f => confirmReceived(store, f)} onCancel={() => setConfirmingStore(null)} />
+              )}
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CreditCardPage({ session, onOpenRequest }) {
+  const [tab, setTab] = useState('list');
+  const isAdmin = session.role === 'admin';
+
+  return (
+    <div>
+      <p className="text-lg font-bold mb-4">信用卡</p>
+      {isAdmin && (
+        <div className="flex items-center gap-2 mb-4">
+          <button onClick={() => setTab('list')}
+            className={cls('px-4 py-2 rounded-lg text-sm font-medium', tab === 'list' ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
+            刷卡紀錄
+          </button>
+          <button onClick={() => setTab('recon')}
+            className={cls('px-4 py-2 rounded-lg text-sm font-medium', tab === 'recon' ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
+            信用卡對帳
+          </button>
+          <button onClick={() => setTab('stats')}
+            className={cls('px-4 py-2 rounded-lg text-sm font-medium', tab === 'stats' ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
+            門店統計
+          </button>
+        </div>
+      )}
+      {tab === 'list' && <CardTransactionList session={session} onOpenRequest={onOpenRequest} />}
+      {isAdmin && tab === 'recon' && <CardReconciliation session={session} />}
+      {isAdmin && tab === 'stats' && <StoreStats session={session} />}
     </div>
   );
 }
@@ -1464,20 +1934,23 @@ function ChangePasswordCard() {
   );
 }
 
+const ROLE_LABEL = { purchaser: '採購', admin: '管理者' };
+
 function AdminAccountsCard({ currentUserId }) {
-  const [admins, setAdmins] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [role, setRole] = useState('purchaser');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await sb.from('users').select('*').eq('role', 'admin').order('name');
-    setAdmins(data || []);
+    const { data } = await sb.from('users').select('*').in('role', ['purchaser', 'admin']).order('role').order('name');
+    setAccounts(data || []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -1495,26 +1968,35 @@ function AdminAccountsCard({ currentUserId }) {
     const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-create-admin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.access_token}` },
-      body: JSON.stringify({ name: name.trim(), email: email.trim(), password })
+      body: JSON.stringify({ name: name.trim(), email: email.trim(), password, role })
     });
     const body = await res.json();
     setBusy(false);
     if (!res.ok) { setErr(body.error || '新增失敗'); return; }
-    setName(''); setEmail(''); setPassword(''); setShowForm(false);
+    setName(''); setEmail(''); setPassword(''); setRole('purchaser'); setShowForm(false);
     await load();
   }
 
   return (
     <Card className="p-4">
       <div className="flex items-center justify-between mb-3">
-        <p className="text-sm font-bold">管理者帳號</p>
+        <p className="text-sm font-bold">採購／管理者帳號</p>
         <button onClick={() => setShowForm(s => !s)} className="text-sm text-ink/50 underline">
-          {showForm ? '取消' : '+ 新增管理者'}
+          {showForm ? '取消' : '+ 新增帳號'}
         </button>
       </div>
 
       {showForm && (
         <div className="flex flex-col gap-2.5 mb-4 pb-4 border-b border-black/5">
+          <div className="flex gap-2">
+            {['purchaser', 'admin'].map(r => (
+              <button key={r} type="button" onClick={() => setRole(r)}
+                className={cls('flex-1 py-2 rounded-lg border text-sm font-medium transition',
+                  role === r ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/70')}>
+                {ROLE_LABEL[r]}
+              </button>
+            ))}
+          </div>
           <input placeholder="姓名" value={name} onChange={e => setName(e.target.value)}
             className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
           <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)}
@@ -1528,9 +2010,9 @@ function AdminAccountsCard({ currentUserId }) {
 
       {loading ? <Spinner /> : (
         <div className="flex flex-col gap-2">
-          {admins.map(a => (
+          {accounts.map(a => (
             <div key={a.id} className={cls('flex items-center justify-between', !a.enabled && 'opacity-50')}>
-              <span className="text-[15px]">{a.name}{a.id === currentUserId ? '（你自己）' : ''}</span>
+              <span className="text-[15px]">{a.name}<span className="text-ink/40 text-xs ml-1.5">（{ROLE_LABEL[a.role]}）</span>{a.id === currentUserId ? '（你自己）' : ''}</span>
               {a.id !== currentUserId && (
                 <button onClick={() => toggleEnabled(a)} className={cls('text-sm underline', a.enabled ? 'text-brick' : 'text-ink/50')}>
                   {a.enabled ? '停用' : '啟用'}
@@ -1556,13 +2038,26 @@ function AccountPage({ session }) {
 
 /* ================= App Shell ================= */
 function navItemsFor(session) {
-  const isAdmin = session.role === 'admin';
+  if (session.role === 'staff') {
+    return [
+      { id: 'dashboard', label: 'Dashboard' },
+      { id: 'new', label: '新增採購' }
+    ];
+  }
+  if (session.role === 'purchaser') {
+    return [
+      { id: 'dashboard', label: 'Dashboard' },
+      { id: 'manage', label: '採購管理' },
+      { id: 'card', label: '信用卡' }
+    ];
+  }
+  // admin
   return [
     { id: 'dashboard', label: 'Dashboard' },
-    ...(!isAdmin ? [{ id: 'new', label: '新增採購' }] : []),
-    ...(isAdmin ? [{ id: 'manage', label: '採購管理' }] : []),
-    ...(isAdmin ? [{ id: 'products', label: '商品管理' }] : []),
-    ...(isAdmin ? [{ id: 'account', label: '帳號設定' }] : [])
+    { id: 'manage', label: '採購管理' },
+    { id: 'products', label: '商品管理' },
+    { id: 'card', label: '信用卡' },
+    { id: 'account', label: '帳號設定' }
   ];
 }
 
@@ -1627,12 +2122,12 @@ function App() {
     if (screen !== 'manage') { setPendingDetailId(null); setPendingFilters(null); }
   }, [screen]);
 
-  const resolveAdminSession = useCallback(async () => {
+  const resolveAuthSession = useCallback(async () => {
     const { data: { session: authSession } } = await sb.auth.getSession();
     if (!authSession) { setSession(null); return; }
     const { data, error } = await sb.from('users').select('*').eq('auth_uid', authSession.user.id).eq('enabled', true).single();
-    if (error || !data) { await sb.auth.signOut(); setSession(null); return; }
-    setSession({ type: 'admin', role: 'admin', userId: data.id, name: data.name });
+    if (error || !data || data.role === 'staff') { await sb.auth.signOut(); setSession(null); return; }
+    setSession({ type: 'auth', role: data.role, userId: data.id, name: data.name });
   }, []);
 
   useEffect(() => {
@@ -1644,8 +2139,8 @@ function App() {
         return;
       } catch (e) {}
     }
-    resolveAdminSession();
-  }, [resolveAdminSession]);
+    resolveAuthSession();
+  }, [resolveAuthSession]);
 
   useEffect(() => {
     if (!session) return;
@@ -1660,13 +2155,13 @@ function App() {
     setScreen('dashboard');
   }
   async function handleAdminLogin() {
-    await resolveAdminSession();
+    await resolveAuthSession();
     setScreen('dashboard');
   }
   async function handleLogout() {
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(SCREEN_KEY);
-    if (session && session.type === 'admin') await sb.auth.signOut();
+    if (session && session.type === 'auth') await sb.auth.signOut();
     setSession(null);
     setScreenState('dashboard');
   }
@@ -1683,6 +2178,7 @@ function App() {
         {screen === 'manage' && <ManagePage session={session} onNavigate={setScreen} initialRequestId={pendingDetailId} initialFilters={pendingFilters} />}
         {screen === 'products' && <ProductsPage />}
         {screen === 'account' && <AccountPage session={session} />}
+        {screen === 'card' && <CreditCardPage session={session} onOpenRequest={openRequest} />}
       </div>
       <MobileTabBar session={session} screen={screen} onNavigate={setScreen} />
     </div>
