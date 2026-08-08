@@ -270,6 +270,7 @@ function StatusPill({ status }) {
 
 /* ================= 公司信用卡：採購單內付款 ================= */
 const CARD_OPTIONS = ['永豐', '兆豐'];
+const PAYMENT_METHOD_OPTIONS = ['永豐', '兆豐', '現金'];
 
 function ReconBadge({ status }) {
   return (
@@ -315,7 +316,7 @@ function PaymentForm({ items, onAdd, onCancel }) {
         <input type="date" value={date} onChange={e => setDate(e.target.value)}
           className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
         <div className="flex gap-2">
-          {CARD_OPTIONS.map(c => (
+          {PAYMENT_METHOD_OPTIONS.map(c => (
             <button key={c} type="button" onClick={() => setCard(c)}
               className={cls('flex-1 py-2 rounded-lg border text-sm font-medium transition',
                 card === c ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/70')}>
@@ -1276,7 +1277,7 @@ function ManualCardForm({ session, defaultStore, lockedCard, onSave, onCancel })
           className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
         {!lockedCard && (
           <div className="flex gap-2">
-            {CARD_OPTIONS.map(c => (
+            {PAYMENT_METHOD_OPTIONS.map(c => (
               <button key={c} type="button" onClick={() => setCard(c)}
                 className={cls('flex-1 py-2 rounded-lg border text-sm font-medium transition',
                   card === c ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/70')}>
@@ -1353,6 +1354,12 @@ function CardTransactionList({ session, onOpenRequest }) {
     await sb.from('card_transactions').delete().eq('id', id);
     load();
   }
+  async function markCashReconciled(id) {
+    await sb.from('card_transactions').update({
+      recon_status: 'reconciled', reconciled_at: new Date().toISOString(), reconciled_by: session.userId
+    }).eq('id', id);
+    load();
+  }
 
   return (
     <div>
@@ -1368,7 +1375,7 @@ function CardTransactionList({ session, onOpenRequest }) {
         <select value={filters.card} onChange={e => setFilters(f => ({ ...f, card: e.target.value }))}
           className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
           <option value="all">全部卡別</option>
-          {CARD_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+          {PAYMENT_METHOD_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
         <select value={filters.store} onChange={e => setFilters(f => ({ ...f, store: e.target.value }))}
           className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
@@ -1406,6 +1413,11 @@ function CardTransactionList({ session, onOpenRequest }) {
                   <p>來源：{SOURCE_LABEL[r.source] || r.source}</p>
                   {r.purchase_request_id && (
                     <button onClick={() => onOpenRequest(r.purchase_request_id)} className="text-left underline text-ink/70">查看原採購單</button>
+                  )}
+                  {r.card === '現金' && r.recon_status === 'pending' && (
+                    <button onClick={() => markCashReconciled(r.id)} className="text-left underline text-[#4E5747] font-bold mt-1">
+                      ✓ 已對帳（現金無帳單可對，登記無誤即可標記）
+                    </button>
                   )}
                   {r.recon_status === 'pending' && (
                     <button onClick={() => deleteRow(r.id)} className="text-left underline text-brick mt-1">刪除這筆</button>
