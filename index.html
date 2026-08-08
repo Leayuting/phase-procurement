@@ -286,17 +286,27 @@ function buildPurchasePurpose(requestNo, items) {
   return `${requestNo}｜${preview}${suffix}`;
 }
 
-function PaymentForm({ onAdd, onCancel }) {
+function PaymentForm({ items, onAdd, onCancel }) {
   const [date, setDate] = useState(taipeiDateStr());
   const [card, setCard] = useState('');
   const [amount, setAmount] = useState('');
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [err, setErr] = useState('');
+
+  function toggleItem(id) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
 
   function submit() {
     if (!card) { setErr('請選擇信用卡'); return; }
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) { setErr('請輸入正確金額'); return; }
-    onAdd({ txn_date: date, card, amount: amt });
+    const selectedItems = (items || []).filter(it => selectedIds.has(it.id));
+    onAdd({ txn_date: date, card, amount: amt }, selectedItems);
   }
 
   return (
@@ -315,6 +325,19 @@ function PaymentForm({ onAdd, onCancel }) {
         </div>
         <input type="number" inputMode="decimal" placeholder="金額" value={amount} onChange={e => setAmount(e.target.value)}
           className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+        {items && items.length > 0 && (
+          <div>
+            <p className="text-xs text-ink/50 mb-1.5">這筆刷卡買了哪些品項？（可複選，不選預設整張單，適用分批購買）</p>
+            <div className="flex flex-col gap-1.5">
+              {items.map(it => (
+                <label key={it.id} className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={selectedIds.has(it.id)} onChange={() => toggleItem(it.id)} className="w-4 h-4" />
+                  <span>{it.product_name} × {it.quantity}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
         {err && <p className="text-brick text-sm">{err}</p>}
         <div className="flex gap-2">
           <Button variant="subtle" className="flex-1" onClick={onCancel}>取消</Button>
@@ -350,11 +373,12 @@ function PurchasePayments({ request, items, session, usersMap }) {
   }, [request.id]);
   useEffect(() => { load(); }, [load]);
 
-  async function addPayment(fields) {
+  async function addPayment(fields, selectedItems) {
+    const purposeItems = selectedItems && selectedItems.length ? selectedItems : items;
     await sb.from('card_transactions').insert({
       ...fields,
       store: request.store,
-      purpose: buildPurchasePurpose(request.request_no, items),
+      purpose: buildPurchasePurpose(request.request_no, purposeItems),
       source: 'purchase',
       purchase_request_id: request.id,
       registrant_id: session.userId
@@ -375,7 +399,7 @@ function PurchasePayments({ request, items, session, usersMap }) {
           {showForm ? '取消' : '＋新增付款'}
         </button>
       </div>
-      {showForm && <PaymentForm onAdd={addPayment} onCancel={() => setShowForm(false)} />}
+      {showForm && <PaymentForm items={items} onAdd={addPayment} onCancel={() => setShowForm(false)} />}
       {payments === null ? (
         <p className="text-sm text-ink/30 py-1">載入中…</p>
       ) : payments.length === 0 ? (
