@@ -1171,7 +1171,9 @@ function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
               <tbody>
                 {rows.map(r => (
                   <tr key={r.id} className="border-b border-black/5 last:border-0 hover:bg-black/[0.02]">
-                    <td className="px-4 py-3 font-mono font-medium">{r.request_no}</td>
+                    <td className="px-4 py-3 font-mono font-medium">
+                      <button onClick={() => setSelectedId(r.id)} className="underline decoration-black/20 hover:decoration-black/60">{r.request_no}</button>
+                    </td>
                     <td className="px-4 py-3 text-ink/60">{fmtDateTime(r.created_at)}</td>
                     <td className="px-4 py-3">{r.store}</td>
                     <td className="px-4 py-3">{r.applicant_name || '—'}</td>
