@@ -2054,47 +2054,6 @@ function ProductsPage() {
 }
 
 /* ================= 帳號設定（管理者） ================= */
-function ChangePasswordCard() {
-  const [current, setCurrent] = useState('');
-  const [next, setNext] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [msg, setMsg] = useState('');
-  const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  async function submit() {
-    setErr(''); setMsg('');
-    if (next.length < 6) { setErr('新密碼至少需要 6 碼'); return; }
-    if (next !== confirm) { setErr('兩次輸入的新密碼不一致'); return; }
-    setBusy(true);
-    const { data: { user } } = await sb.auth.getUser();
-    const { error: reauthError } = await sb.auth.signInWithPassword({ email: user.email, password: current });
-    if (reauthError) { setErr('目前密碼不正確'); setBusy(false); return; }
-    const { error: updateError } = await sb.auth.updateUser({ password: next });
-    setBusy(false);
-    if (updateError) { setErr('更新失敗，請稍後再試'); return; }
-    setMsg('密碼已更新');
-    setCurrent(''); setNext(''); setConfirm('');
-  }
-
-  return (
-    <Card className="p-4">
-      <p className="text-sm font-bold mb-3">修改密碼</p>
-      <div className="flex flex-col gap-2.5">
-        <input type="password" placeholder="目前密碼" value={current} onChange={e => setCurrent(e.target.value)}
-          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
-        <input type="password" placeholder="新密碼（至少 6 碼）" value={next} onChange={e => setNext(e.target.value)}
-          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
-        <input type="password" placeholder="確認新密碼" value={confirm} onChange={e => setConfirm(e.target.value)}
-          className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
-      </div>
-      {err && <p className="text-brick text-sm mt-2">{err}</p>}
-      {msg && <p className="text-sm mt-2 text-[#4E5747]">{msg}</p>}
-      <Button className="mt-3" disabled={busy} onClick={submit}>{busy ? '處理中…' : '更新密碼'}</Button>
-    </Card>
-  );
-}
-
 const ROLE_LABEL = { purchaser: '採購', admin: '管理者' };
 
 function AccountPinResetInline({ onSave, onCancel }) {
@@ -2116,7 +2075,9 @@ function AccountPinResetInline({ onSave, onCancel }) {
   );
 }
 
-function AdminAccountsCard({ currentUserId }) {
+function AdminAccountsCard({ session }) {
+  const currentUserId = session.userId;
+  const isAdmin = session.role === 'admin';
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -2131,9 +2092,9 @@ function AdminAccountsCard({ currentUserId }) {
   const load = useCallback(async () => {
     setLoading(true);
     const { data } = await sb.from('users').select('*').in('role', ['purchaser', 'admin']).order('role').order('name');
-    setAccounts(data || []);
+    setAccounts(isAdmin ? (data || []) : (data || []).filter(a => a.id === currentUserId));
     setLoading(false);
-  }, []);
+  }, [isAdmin, currentUserId]);
   useEffect(() => { load(); }, [load]);
 
   async function toggleEnabled(u) {
@@ -2175,13 +2136,15 @@ function AdminAccountsCard({ currentUserId }) {
   return (
     <Card className="p-4">
       <div className="flex items-center justify-between mb-3">
-        <p className="text-sm font-bold">採購／管理者帳號</p>
-        <button onClick={() => setShowForm(s => !s)} className="text-sm text-ink/50 underline">
-          {showForm ? '取消' : '+ 新增帳號'}
-        </button>
+        <p className="text-sm font-bold">{isAdmin ? '採購／管理者帳號' : '我的帳號'}</p>
+        {isAdmin && (
+          <button onClick={() => setShowForm(s => !s)} className="text-sm text-ink/50 underline">
+            {showForm ? '取消' : '+ 新增帳號'}
+          </button>
+        )}
       </div>
 
-      {showForm && (
+      {isAdmin && showForm && (
         <div className="flex flex-col gap-2.5 mb-4 pb-4 border-b border-black/5">
           <div className="flex gap-2">
             {['purchaser', 'admin'].map(r => (
@@ -2211,8 +2174,10 @@ function AdminAccountsCard({ currentUserId }) {
               <div className="flex items-center justify-between">
                 <span className="text-[15px]">{a.name}<span className="text-ink/40 text-xs ml-1.5">（{ROLE_LABEL[a.role]}）</span>{a.id === currentUserId ? '（你自己）' : ''}</span>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => setResettingId(resettingId === a.id ? null : a.id)} className="text-sm text-ink/50 underline">重設 PIN</button>
-                  {a.id !== currentUserId && (
+                  {a.id === currentUserId && (
+                    <button onClick={() => setResettingId(resettingId === a.id ? null : a.id)} className="text-sm text-ink/50 underline">重設 PIN</button>
+                  )}
+                  {isAdmin && a.id !== currentUserId && (
                     <button onClick={() => toggleEnabled(a)} className={cls('text-sm underline', a.enabled ? 'text-brick' : 'text-ink/50')}>
                       {a.enabled ? '停用' : '啟用'}
                     </button>
@@ -2234,8 +2199,7 @@ function AccountPage({ session }) {
   return (
     <div className="flex flex-col gap-4 max-w-md">
       <p className="text-lg font-bold">帳號設定</p>
-      <ChangePasswordCard />
-      <AdminAccountsCard currentUserId={session.userId} />
+      <AdminAccountsCard session={session} />
     </div>
   );
 }
@@ -2252,7 +2216,8 @@ function navItemsFor(session) {
     return [
       { id: 'dashboard', label: 'Dashboard' },
       { id: 'manage', label: '採購管理' },
-      { id: 'card', label: '信用卡' }
+      { id: 'card', label: '信用卡' },
+      { id: 'account', label: '帳號設定' }
     ];
   }
   // admin
