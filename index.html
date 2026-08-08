@@ -414,16 +414,21 @@ function PurchasePayments({ request, items, session, usersMap }) {
   );
 }
 
-function RequestItemsInline({ request }) {
+function RequestItemsInline({ request, onAcked }) {
   const [items, setItems] = useState(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  const load = useCallback(() => {
     sb.from('purchase_items').select('*').eq('request_id', request.id).order('id').then(({ data }) => {
-      if (!cancelled) setItems(data || []);
+      setItems(data || []);
     });
-    return () => { cancelled = true; };
   }, [request.id]);
+  useEffect(() => { load(); }, [load]);
+
+  async function ackStockIssue(itemId) {
+    await sb.from('purchase_items').update({ stock_issue_acked_at: new Date().toISOString() }).eq('id', itemId);
+    load();
+    if (onAcked) onAcked();
+  }
 
   return (
     <div className="border-t border-black/5 mt-3 pt-3" onClick={e => e.stopPropagation()}>
@@ -439,6 +444,19 @@ function RequestItemsInline({ request }) {
               </div>
               {it.source && <p className="text-xs text-ink/40 mt-0.5">來源：{it.source}</p>}
               {it.item_remark && <p className="text-xs text-ink/40 mt-0.5">備註：{it.item_remark}</p>}
+              {it.stock_issue && (
+                it.stock_issue_acked_at ? (
+                  <p className="text-xs text-ink/30 mt-1">已知悉：缺貨/未採購</p>
+                ) : (
+                  <div className="mt-1.5 bg-brick/10 border border-brick/30 rounded-lg px-3 py-2">
+                    <p className="text-xs font-bold text-brick mb-1.5">⚠ 缺貨未採購</p>
+                    <button onClick={() => ackStockIssue(it.id)}
+                      className="text-xs font-bold px-3 py-1.5 rounded-lg bg-brick text-white">
+                      已知悉
+                    </button>
+                  </div>
+                )
+              )}
             </div>
           ))}
           {request.remark && <p className="text-xs text-ink/40 pt-1 border-t border-black/5 mt-1">整單備註：{request.remark}</p>}
@@ -455,6 +473,7 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
   const [storeFilter, setStoreFilter] = useState('all');
   const isStaff = session.role === 'staff';
   const canViewAll = session.role === 'admin' || session.role === 'purchaser';
+  const [flaggedIds, setFlaggedIds] = useState(new Set());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -466,13 +485,26 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
     setLoading(false);
   }, [isStaff, session.store, storeFilter]);
 
+  const loadFlags = useCallback(async () => {
+    const { data } = await sb.from('purchase_items').select('request_id').eq('stock_issue', true).is('stock_issue_acked_at', null);
+    setFlaggedIds(new Set((data || []).map(d => d.request_id)));
+  }, []);
+
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (isStaff) loadFlags(); }, [isStaff, loadFlags]);
   useEffect(() => {
     const ch = sb.channel('dashboard-requests')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requests' }, load)
       .subscribe();
     return () => { sb.removeChannel(ch); };
   }, [load]);
+  useEffect(() => {
+    if (!isStaff) return;
+    const ch = sb.channel('dashboard-stock-issues')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_items' }, loadFlags)
+      .subscribe();
+    return () => { sb.removeChannel(ch); };
+  }, [isStaff, loadFlags]);
 
   const today = taipeiDateStr();
   const stats = useMemo(() => {
@@ -519,9 +551,14 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
                   <p className="font-mono text-sm font-semibold truncate">{r.request_no}</p>
                   <p className="text-xs text-ink/40 mt-0.5">{canViewAll ? r.store + ' · ' : ''}{fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
                 </div>
-                <StatusPill status={r.status} />
+                <div className="flex items-center gap-2">
+                  {isStaff && flaggedIds.has(r.id) && (
+                    <span className="text-xs font-bold px-2 py-1 rounded-full bg-brick text-white">⚠ 缺貨未採購</span>
+                  )}
+                  <StatusPill status={r.status} />
+                </div>
               </div>
-              {isStaff && expandedId === r.id && <RequestItemsInline request={r} />}
+              {isStaff && expandedId === r.id && <RequestItemsInline request={r} onAcked={loadFlags} />}
             </Card>
           ))}
           {rows.length === 0 && <p className="text-sm text-ink/40 text-center py-10">目前沒有採購紀錄</p>}
@@ -1149,6 +1186,15 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
     await load();
   }
 
+  async function toggleStockIssue(item) {
+    const next = !item.stock_issue;
+    await sb.from('purchase_items').update({
+      stock_issue: next,
+      stock_issue_acked_at: null
+    }).eq('id', item.id);
+    await load();
+  }
+
   if (loading || !req) return <Spinner />;
 
   return (
@@ -1190,6 +1236,18 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
                 <p className="text-sm text-ink/50">× {it.quantity}</p>
               </div>
               {it.source && <p className="text-xs text-ink/40 mt-0.5">來源：{it.source}{it.url ? '　' : ''}{it.url && <a href={it.url} target="_blank" rel="noreferrer" className="underline">連結</a>}</p>}
+              <div className="mt-2">
+                <button onClick={() => toggleStockIssue(it)}
+                  className={cls('text-xs font-bold px-2.5 py-1 rounded-full border transition',
+                    it.stock_issue ? 'bg-brick text-white border-brick' : 'border-ink/15 text-ink/40')}>
+                  {it.stock_issue ? '⚠ 缺貨未採購（點擊取消標記）' : '標記缺貨/未採購'}
+                </button>
+                {it.stock_issue && (
+                  <span className="text-[11px] text-ink/30 ml-2">
+                    {it.stock_issue_acked_at ? '門市已知悉 · ' + fmtDateTime(it.stock_issue_acked_at) : '門市尚未知悉'}
+                  </span>
+                )}
+              </div>
               {canEdit ? (
                 <div className="flex items-center gap-2 mt-2">
                   <input value={itemDrafts[it.id] || ''} onChange={e => setItemDrafts(d => ({ ...d, [it.id]: e.target.value }))}
