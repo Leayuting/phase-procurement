@@ -1455,7 +1455,7 @@ function ManualCardForm({ session, defaultStore, lockedCard, onSave, onCancel })
           className="px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
         {!lockedCard && (
           <div className="flex gap-2">
-            {PAYMENT_METHOD_OPTIONS.map(c => (
+            {CARD_OPTIONS.map(c => (
               <button key={c} type="button" onClick={() => setCard(c)}
                 className={cls('flex-1 py-2 rounded-lg border text-sm font-medium transition',
                   card === c ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/70')}>
