@@ -1991,6 +1991,24 @@ function ProductsTab() {
 
   const visible = categoryFilter === 'all' ? products : products.filter(p => p.category === categoryFilter);
 
+  const [exporting, setExporting] = useState(false);
+  function exportProducts() {
+    if (visible.length === 0) return;
+    setExporting(true);
+    const exportRows = visible.map(p => ({
+      '商品名稱': p.name,
+      '分類': p.category,
+      '單位': p.unit,
+      '供應商': p.supplier || '',
+      '狀態': p.enabled ? '啟用' : '停用'
+    }));
+    const ws = XLSX.utils.json_to_sheet(exportRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '商品清單');
+    XLSX.writeFile(wb, `PHASE商品清單_${taipeiDateStr().replace(/-/g, '')}.xlsx`);
+    setExporting(false);
+  }
+
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -2002,6 +2020,9 @@ function ProductsTab() {
         <div className="flex gap-2">
           <input ref={fileInputRef} type="file" accept=".csv" onChange={handleCsvFile} className="hidden" id="csvInput" />
           <Button variant="ghost" onClick={() => fileInputRef.current?.click()}>CSV 匯入</Button>
+          <Button variant="ghost" disabled={exporting || visible.length === 0} onClick={exportProducts}>
+            {exporting ? '匯出中…' : '匯出 Excel'}
+          </Button>
           <Button onClick={() => { setEditing(null); setShowForm(true); }}>新增商品</Button>
         </div>
       </div>
