@@ -1212,7 +1212,7 @@ function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
 }
 
 function ManageDetail({ requestId, session, usersMap, onBack }) {
-  const canEdit = session.role === 'admin';
+  const canEdit = session.role === 'admin' || session.role === 'purchaser';
   const [req, setReq] = useState(null);
   const [items, setItems] = useState([]);
   const [logs, setLogs] = useState([]);
