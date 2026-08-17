@@ -2108,8 +2108,9 @@ function StorePinTab() {
   );
 }
 
-function ProductsPage() {
+function ProductsPage({ session }) {
   const [tab, setTab] = useState('products');
+  const isAdmin = session.role === 'admin';
   return (
     <div>
       <div className="flex items-center gap-2 mb-4">
@@ -2117,12 +2118,14 @@ function ProductsPage() {
           className={cls('px-4 py-2 rounded-lg text-sm font-medium', tab === 'products' ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
           商品
         </button>
-        <button onClick={() => setTab('pin')}
-          className={cls('px-4 py-2 rounded-lg text-sm font-medium', tab === 'pin' ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
-          門市登入 PIN
-        </button>
+        {isAdmin && (
+          <button onClick={() => setTab('pin')}
+            className={cls('px-4 py-2 rounded-lg text-sm font-medium', tab === 'pin' ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
+            門市登入 PIN
+          </button>
+        )}
       </div>
-      {tab === 'products' ? <ProductsTab /> : <StorePinTab />}
+      {tab === 'products' || !isAdmin ? <ProductsTab /> : <StorePinTab />}
     </div>
   );
 }
@@ -2290,6 +2293,7 @@ function navItemsFor(session) {
     return [
       { id: 'dashboard', label: 'Dashboard' },
       { id: 'manage', label: '採購管理' },
+      { id: 'products', label: '商品管理' },
       { id: 'card', label: '信用卡' },
       { id: 'account', label: '帳號設定' }
     ];
@@ -2419,7 +2423,7 @@ function App() {
         {screen === 'dashboard' && <Dashboard session={session} onNavigate={setScreen} onOpenRequest={openRequest} onOpenFiltered={openManageFiltered} />}
         {screen === 'new' && <NewRequest session={session} onNavigate={setScreen} />}
         {screen === 'manage' && <ManagePage session={session} onNavigate={setScreen} initialRequestId={pendingDetailId} initialFilters={pendingFilters} />}
-        {screen === 'products' && <ProductsPage />}
+        {screen === 'products' && <ProductsPage session={session} />}
         {screen === 'account' && <AccountPage session={session} />}
         {screen === 'card' && <CreditCardPage session={session} onOpenRequest={openRequest} />}
       </div>
