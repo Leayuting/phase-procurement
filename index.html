@@ -2297,6 +2297,11 @@ function ProductsTab() {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [importMsg, setImportMsg] = useState('');
   const fileInputRef = useRef(null);
+  const formRef = useRef(null);
+
+  useEffect(() => {
+    if (showForm && formRef.current) formRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [showForm]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -2372,7 +2377,9 @@ function ProductsTab() {
       {importMsg && <p className="text-sm text-ink/50 mb-2">{importMsg}</p>}
 
       {showForm && (
-        <ProductForm initial={editing} onSave={saveProduct} onCancel={() => { setShowForm(false); setEditing(null); }} />
+        <div ref={formRef}>
+          <ProductForm initial={editing} onSave={saveProduct} onCancel={() => { setShowForm(false); setEditing(null); }} />
+        </div>
       )}
 
       {loading ? <Spinner /> : (
