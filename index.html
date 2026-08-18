@@ -61,11 +61,19 @@ const SESSION_KEY = 'phase_procurement_staff_session';
 const SCREEN_KEY = 'phase_procurement_screen';
 
 const STATUS_META = {
-  pending:   { label: '待採購', color: '#A9754A' },
-  ordered:   { label: '已下單', color: '#5E6770' },
-  awaiting:  { label: '待到貨', color: '#D4870A' },
-  done:      { label: '完成',   color: '#4E5747' },
-  cancelled: { label: '取消',   color: '#8C8378' }
+  pending:   { label: '待採購',   color: '#A9754A' },
+  ordered:   { label: '已下單',   color: '#5E6770' },
+  awaiting:  { label: '待到貨',   color: '#D4870A' },
+  partial:   { label: '部分到貨', color: '#4A6FA5' },
+  done:      { label: '完成',     color: '#4E5747' },
+  exception: { label: '異常',     color: '#B5402A' },
+  cancelled: { label: '取消',     color: '#8C8378' }
+};
+const ACCEPTANCE_RESULT_META = {
+  full:         { label: '全部收到',     status: 'done' },
+  partial:      { label: '部分收到',     status: 'partial' },
+  qty_mismatch: { label: '數量不符',     status: 'exception' },
+  damaged:      { label: '商品錯誤／破損', status: 'exception' }
 };
 
 /* ================= 小工具 ================= */
@@ -481,15 +489,152 @@ function PurchasePayments({ request, items, session, usersMap }) {
   );
 }
 
+function SignaturePad({ onChange }) {
+  const canvasRef = useRef(null);
+  const drawingRef = useRef(false);
+  const lastPos = useRef(null);
+  const hasDrawnRef = useRef(false);
+
+  function getPos(e) {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const t = e.touches ? e.touches[0] : e;
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return { x: (t.clientX - rect.left) * scaleX, y: (t.clientY - rect.top) * scaleY };
+  }
+  function start(e) {
+    e.preventDefault();
+    drawingRef.current = true;
+    lastPos.current = getPos(e);
+  }
+  function move(e) {
+    if (!drawingRef.current) return;
+    e.preventDefault();
+    const ctx = canvasRef.current.getContext('2d');
+    const pos = getPos(e);
+    ctx.strokeStyle = '#1A0800';
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(lastPos.current.x, lastPos.current.y);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    lastPos.current = pos;
+    hasDrawnRef.current = true;
+    onChange(canvasRef.current.toDataURL('image/png'));
+  }
+  function end() { drawingRef.current = false; }
+  function clear() {
+    const canvas = canvasRef.current;
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    hasDrawnRef.current = false;
+    onChange(null);
+  }
+
+  return (
+    <div>
+      <canvas ref={canvasRef} width={320} height={140}
+        className="w-full border border-ink/15 rounded-lg bg-white touch-none"
+        onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
+        onTouchStart={start} onTouchMove={move} onTouchEnd={end} />
+      <button type="button" onClick={clear} className="text-xs text-ink/40 underline mt-1">清除簽名</button>
+    </div>
+  );
+}
+
+const ACCEPTANCE_RESULT_OPTIONS = [
+  { value: 'full', label: '全部收到' },
+  { value: 'partial', label: '部分收到' },
+  { value: 'qty_mismatch', label: '數量不符' },
+  { value: 'damaged', label: '商品錯誤／破損' }
+];
+
+function AcceptanceModal({ request, onClose, onDone }) {
+  const [result, setResult] = useState(null);
+  const [acceptedBy, setAcceptedBy] = useState('');
+  const [signature, setSignature] = useState(null);
+  const [note, setNote] = useState('');
+  const [err, setErr] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit() {
+    setErr('');
+    if (!result) { setErr('請選擇驗收結果'); return; }
+    if (!acceptedBy.trim()) { setErr('請填寫驗收人姓名'); return; }
+    if (!signature) { setErr('請簽名'); return; }
+    setSubmitting(true);
+    const newStatus = ACCEPTANCE_RESULT_META[result].status;
+    const { error: accError } = await sb.from('acceptance_records').insert({
+      request_id: request.id, result, accepted_by: acceptedBy.trim(), signature, note: note.trim() || null
+    });
+    if (accError) { setSubmitting(false); setErr('送出失敗，請稍後再試'); return; }
+    await sb.from('purchase_requests').update({ status: newStatus, updated_at: new Date().toISOString() })
+      .eq('id', request.id).eq('status', request.status);
+    await sb.from('status_logs').insert({
+      request_id: request.id, old_status: request.status, new_status: newStatus, operator_id: null,
+      note: `門市驗收：${ACCEPTANCE_RESULT_META[result].label}（驗收人：${acceptedBy.trim()}）`
+    });
+    setSubmitting(false);
+    onDone(newStatus);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-end md:items-center justify-center p-0 md:p-4" onClick={onClose}>
+      <div className="bg-cream w-full md:max-w-md rounded-t-2xl md:rounded-2xl p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <p className="text-lg font-bold mb-1">是否確認商品已收到？</p>
+        <p className="text-xs text-ink/40 mb-4">{request.request_no}</p>
+        <div className="grid grid-cols-2 gap-2 mb-4">
+          {ACCEPTANCE_RESULT_OPTIONS.map(o => (
+            <button key={o.value} type="button" onClick={() => setResult(o.value)}
+              className={cls('px-3 py-3 rounded-xl text-sm font-medium border transition text-center',
+                result === o.value ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/70')}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        {result && (
+          <div className="flex flex-col gap-2.5">
+            <input placeholder="驗收人姓名" value={acceptedBy} onChange={e => setAcceptedBy(e.target.value)}
+              className="w-full px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+            <SignaturePad onChange={setSignature} />
+            <textarea placeholder="備註（選填）" value={note} onChange={e => setNote(e.target.value)} rows={2}
+              className="w-full px-3 py-2.5 rounded-lg border border-ink/15 text-[15px] resize-none" />
+            {err && <p className="text-brick text-sm">{err}</p>}
+            <div className="flex gap-2 mt-1">
+              <Button variant="subtle" className="flex-1" onClick={onClose}>取消</Button>
+              <Button variant="brick" className="flex-1" disabled={submitting} onClick={submit}>
+                {submitting ? '送出中…' : '送出驗收'}
+              </Button>
+            </div>
+          </div>
+        )}
+        {!result && err && <p className="text-brick text-sm mt-2">{err}</p>}
+      </div>
+    </div>
+  );
+}
+
 function RequestItemsInline({ request, onAcked }) {
   const [items, setItems] = useState(null);
+  const [orderedAt, setOrderedAt] = useState(null);
+  const [localStatus, setLocalStatus] = useState(null);
+  const [cancelExpanded, setCancelExpanded] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [showAccept, setShowAccept] = useState(false);
 
-  const load = useCallback(() => {
-    sb.from('purchase_items').select('*').eq('request_id', request.id).order('id').then(({ data }) => {
-      setItems(data || []);
-    });
+  const load = useCallback(async () => {
+    const [{ data: itemData }, { data: logData }] = await Promise.all([
+      sb.from('purchase_items').select('*').eq('request_id', request.id).order('id'),
+      sb.from('status_logs').select('created_at').eq('request_id', request.id).eq('new_status', 'ordered')
+        .order('created_at', { ascending: true }).limit(1)
+    ]);
+    setItems(itemData || []);
+    setOrderedAt(logData && logData[0] ? logData[0].created_at : null);
   }, [request.id]);
   useEffect(() => { load(); }, [load]);
+
+  const effectiveStatus = localStatus || request.status;
 
   async function ackStockIssue(itemId) {
     await sb.from('purchase_items').update({ stock_issue_acked_at: new Date().toISOString() }).eq('id', itemId);
@@ -502,12 +647,29 @@ function RequestItemsInline({ request, onAcked }) {
     if (onAcked) onAcked();
   }
 
+  async function cancelRequest() {
+    setCancelling(true);
+    const { data } = await sb.from('purchase_requests')
+      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+      .eq('id', request.id).eq('status', 'pending').select();
+    if (data && data.length > 0) {
+      await sb.from('status_logs').insert({
+        request_id: request.id, old_status: 'pending', new_status: 'cancelled', operator_id: null,
+        note: `門市自行取消（送單人：${request.applicant_name || '—'}）`
+      });
+      setLocalStatus('cancelled');
+    }
+    setCancelling(false);
+    setCancelExpanded(false);
+  }
+
   return (
     <div className="border-t border-black/5 mt-3 pt-3" onClick={e => e.stopPropagation()}>
       {items === null ? (
         <p className="text-sm text-ink/30 py-2">載入中…</p>
       ) : (
         <div className="flex flex-col gap-2.5">
+          {orderedAt && <p className="text-xs text-ink/40">已下單於 {fmtDateTime(orderedAt)}</p>}
           {items.map(it => (
             <div key={it.id}>
               <div className="flex items-center justify-between">
@@ -544,7 +706,45 @@ function RequestItemsInline({ request, onAcked }) {
             </div>
           ))}
           {request.remark && <p className="text-xs text-ink/40 pt-1 border-t border-black/5 mt-1">整單備註：{request.remark}</p>}
+
+          {effectiveStatus === 'pending' && (
+            <div className="pt-1 border-t border-black/5 mt-1">
+              {!cancelExpanded ? (
+                <button onClick={() => setCancelExpanded(true)} className="text-xs font-medium text-brick underline">
+                  取消採購
+                </button>
+              ) : (
+                <div className="bg-brick/10 border border-brick/30 rounded-lg px-3 py-2 mt-1">
+                  <p className="text-xs text-brick font-bold mb-2">確定要取消這筆採購嗎？取消後不可恢復，如有需求請重新新增採購。</p>
+                  <div className="flex gap-2">
+                    <button onClick={() => setCancelExpanded(false)} className="text-xs text-ink/50 underline">我再想想</button>
+                    <button onClick={cancelRequest} disabled={cancelling}
+                      className="text-xs font-bold px-3 py-1.5 rounded-lg bg-brick text-white disabled:opacity-50">
+                      {cancelling ? '取消中…' : '確定取消'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {(effectiveStatus === 'awaiting' || effectiveStatus === 'partial') && (
+            <div className="pt-1 border-t border-black/5 mt-1">
+              <Button variant="brick" className="w-full" onClick={() => setShowAccept(true)}>驗收</Button>
+            </div>
+          )}
+          {effectiveStatus === 'done' && localStatus === 'done' && (
+            <p className="text-xs text-[#4E5747] font-medium pt-1 border-t border-black/5 mt-1">✓ 已完成驗收</p>
+          )}
+          {effectiveStatus === 'cancelled' && localStatus === 'cancelled' && (
+            <p className="text-xs text-ink/40 pt-1 border-t border-black/5 mt-1">已取消</p>
+          )}
         </div>
+      )}
+      {showAccept && (
+        <AcceptanceModal request={{ ...request, status: effectiveStatus }}
+          onClose={() => setShowAccept(false)}
+          onDone={(newStatus) => { setLocalStatus(newStatus); setShowAccept(false); load(); if (onAcked) onAcked(); }} />
       )}
     </div>
   );
@@ -736,6 +936,33 @@ function CustomItemForm({ onAdd, onCancel }) {
   );
 }
 
+function DuplicateWarningModal({ matches, onConfirm, onCancel }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-end md:items-center justify-center p-0 md:p-4" onClick={onCancel}>
+      <div className="bg-cream w-full md:max-w-md rounded-t-2xl md:rounded-2xl p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <p className="text-lg font-bold mb-1">目前已有相同品項尚未完成</p>
+        <p className="text-sm text-ink/50 mb-4">是否確認再次新增？</p>
+        <div className="flex flex-col gap-2 mb-4">
+          {matches.map(m => (
+            <Card key={m.request_id} className="p-3">
+              <p className="text-sm font-mono font-semibold">{m.purchase_requests.request_no}</p>
+              <p className="text-xs text-ink/50 mt-1">
+                申請人：{m.purchase_requests.applicant_name || '—'}　數量：{m.quantity}
+              </p>
+              <p className="text-xs text-ink/50 mt-0.5">{fmtDateTime(m.purchase_requests.created_at)}</p>
+              <div className="mt-1"><StatusPill status={m.purchase_requests.status} /></div>
+            </Card>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <Button variant="subtle" className="flex-1" onClick={onCancel}>取消</Button>
+          <Button variant="brick" className="flex-1" onClick={onConfirm}>確認新增</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function NewRequest({ session, onNavigate }) {
   const [allProducts, setAllProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
@@ -785,7 +1012,18 @@ function NewRequest({ session, onNavigate }) {
     return groups.map(cat => ({ category: cat, items: byCategory[cat] }));
   }, [visibleProducts]);
 
-  function addProduct(p) {
+  const [duplicateModal, setDuplicateModal] = useState(null);
+
+  async function checkDuplicate(productName) {
+    const { data } = await sb.from('purchase_items')
+      .select('quantity, request_id, purchase_requests!inner(request_no, applicant_name, created_at, status, store)')
+      .eq('product_name', productName)
+      .eq('purchase_requests.store', session.store)
+      .in('purchase_requests.status', ['pending', 'ordered', 'awaiting', 'partial']);
+    return data || [];
+  }
+
+  function doAddProduct(p) {
     setCart(prev => {
       const existing = prev.find(it => it.product_id === p.id);
       if (existing) {
@@ -795,9 +1033,26 @@ function NewRequest({ session, onNavigate }) {
     });
     setSearch('');
   }
-  function addCustom(item) {
+  async function addProduct(p) {
+    if (cart.some(it => it.product_id === p.id)) { doAddProduct(p); return; }
+    const matches = await checkDuplicate(p.name);
+    if (matches.length > 0) {
+      setDuplicateModal({ matches, proceed: () => { doAddProduct(p); setDuplicateModal(null); } });
+    } else {
+      doAddProduct(p);
+    }
+  }
+  function doAddCustom(item) {
     setCart(prev => [...prev, item]);
     setShowCustomForm(false);
+  }
+  async function addCustom(item) {
+    const matches = await checkDuplicate(item.product_name);
+    if (matches.length > 0) {
+      setDuplicateModal({ matches, proceed: () => { doAddCustom(item); setDuplicateModal(null); } });
+    } else {
+      doAddCustom(item);
+    }
   }
   function updateQty(key, qty) {
     setCart(prev => prev.map(it => it.key === key ? { ...it, quantity: qty } : it));
@@ -952,12 +1207,17 @@ function NewRequest({ session, onNavigate }) {
           )}
         </Button>
       </div>
+      {duplicateModal && (
+        <DuplicateWarningModal matches={duplicateModal.matches}
+          onConfirm={duplicateModal.proceed} onCancel={() => setDuplicateModal(null)} />
+      )}
     </div>
   );
 }
 
 /* ================= 採購管理（管理者） ================= */
-const STATUS_ORDER = ['pending', 'ordered', 'awaiting', 'done', 'cancelled'];
+const STATUS_ORDER = ['pending', 'ordered', 'awaiting', 'partial', 'done', 'exception', 'cancelled'];
+const MANUAL_STATUS_OPTIONS = ['pending', 'ordered', 'awaiting', 'partial', 'exception', 'cancelled'];
 
 function ManageFilterBar({ filters, onChange }) {
   function set(patch) { onChange({ ...filters, ...patch }); }
@@ -1008,7 +1268,7 @@ function MonthlySummary({ store, onBack }) {
       .select('product_name, quantity, request_id, purchase_requests!inner(store, created_at, status), products(unit, supplier)')
       .gte('purchase_requests.created_at', startIso)
       .lt('purchase_requests.created_at', endIso)
-      .in('purchase_requests.status', ['ordered', 'awaiting', 'done']);
+      .in('purchase_requests.status', ['ordered', 'awaiting', 'partial', 'done']);
     if (store !== 'all') q = q.eq('purchase_requests.store', store);
     q.then(({ data, error }) => {
       setRows(error ? [] : data || []);
@@ -1221,17 +1481,20 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
   const [itemDrafts, setItemDrafts] = useState({});
   const [editingRemarkId, setEditingRemarkId] = useState(null);
   const [conflictMsg, setConflictMsg] = useState('');
+  const [acceptances, setAcceptances] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [{ data: reqData }, { data: itemData }, { data: logData }] = await Promise.all([
+    const [{ data: reqData }, { data: itemData }, { data: logData }, { data: accData }] = await Promise.all([
       sb.from('purchase_requests').select('*').eq('id', requestId).single(),
       sb.from('purchase_items').select('*').eq('request_id', requestId).order('id'),
-      sb.from('status_logs').select('*').eq('request_id', requestId).order('created_at', { ascending: false })
+      sb.from('status_logs').select('*').eq('request_id', requestId).order('created_at', { ascending: false }),
+      sb.from('acceptance_records').select('*').eq('request_id', requestId).order('created_at', { ascending: false })
     ]);
     setReq(reqData || null);
     setItems(itemData || []);
     setLogs(logData || []);
+    setAcceptances(accData || []);
     setRemarkDraft(reqData?.remark || '');
     const drafts = {};
     (itemData || []).forEach(it => { drafts[it.id] = it.item_remark || ''; });
@@ -1313,7 +1576,7 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
         <p className="text-sm font-bold mb-3">狀態</p>
         {canEdit ? (
           <div className="flex flex-wrap gap-2">
-            {STATUS_ORDER.map(s => (
+            {MANUAL_STATUS_OPTIONS.map(s => (
               <button key={s} onClick={() => changeStatus(s)}
                 className={cls('px-3 py-2 rounded-lg text-sm font-medium border transition',
                   req.status === s ? 'text-white border-transparent' : 'border-ink/15 text-ink/60 hover:border-ink/30')}
@@ -1407,6 +1670,27 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
           <p className="text-[11px] text-ink/30 mt-2">
             {usersMap[req.remark_updated_by] || '—'} 於 {fmtDateTime(req.remark_updated_at)} 更新
           </p>
+        )}
+      </Card>
+
+      <Card className="p-4 mb-4">
+        <p className="text-sm font-bold mb-3">驗收紀錄</p>
+        {acceptances.length === 0 ? <p className="text-sm text-ink/30">尚無門市驗收紀錄</p> : (
+          <div className="flex flex-col gap-3">
+            {acceptances.map(a => (
+              <div key={a.id} className="flex items-start gap-3 border-b border-black/5 last:border-0 pb-3 last:pb-0">
+                <img src={a.signature} alt="簽名" className="w-24 h-12 object-contain border border-ink/10 rounded bg-white shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-sm">
+                    <span className="font-medium">{a.accepted_by}</span>
+                    {' '}驗收結果：<span className="font-medium">{ACCEPTANCE_RESULT_META[a.result]?.label || a.result}</span>
+                  </p>
+                  {a.note && <p className="text-xs text-ink/50 mt-0.5">備註：{a.note}</p>}
+                  <p className="text-xs text-ink/30 mt-0.5">{fmtDateTime(a.created_at)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </Card>
 
