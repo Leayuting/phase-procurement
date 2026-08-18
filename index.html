@@ -669,7 +669,7 @@ function RequestItemsInline({ request, onAcked }) {
         <p className="text-sm text-ink/30 py-2">載入中…</p>
       ) : (
         <div className="flex flex-col gap-2.5">
-          {orderedAt && <p className="text-xs text-ink/40">已下單於 {fmtDateTime(orderedAt)}</p>}
+          {orderedAt && <p className="text-xs font-bold text-brick">已下單於 {fmtDateTime(orderedAt)}</p>}
           {items.map(it => (
             <div key={it.id}>
               <div className="flex items-center justify-between">
