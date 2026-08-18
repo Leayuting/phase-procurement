@@ -1482,6 +1482,7 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
   const [editingRemarkId, setEditingRemarkId] = useState(null);
   const [conflictMsg, setConflictMsg] = useState('');
   const [acceptances, setAcceptances] = useState([]);
+  const [zoomSignature, setZoomSignature] = useState(null);
   const [showCancelPrompt, setShowCancelPrompt] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelErr, setCancelErr] = useState('');
@@ -1705,7 +1706,8 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
           <div className="flex flex-col gap-3">
             {acceptances.map(a => (
               <div key={a.id} className="flex items-start gap-3 border-b border-black/5 last:border-0 pb-3 last:pb-0">
-                <img src={a.signature} alt="簽名" className="w-24 h-12 object-contain border border-ink/10 rounded bg-white shrink-0" />
+                <img src={a.signature} alt="簽名" onClick={() => setZoomSignature(a.signature)}
+                  className="w-24 h-12 object-contain border border-ink/10 rounded bg-white shrink-0 cursor-zoom-in" />
                 <div className="min-w-0">
                   <p className="text-sm">
                     <span className="font-medium">{a.accepted_by}</span>
@@ -1719,6 +1721,12 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
           </div>
         )}
       </Card>
+
+      {zoomSignature && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => setZoomSignature(null)}>
+          <img src={zoomSignature} alt="簽名放大" className="max-w-full max-h-full bg-white rounded-lg p-4" />
+        </div>
+      )}
 
       <Card className="p-4">
         <p className="text-sm font-bold mb-3">狀態異動紀錄</p>
