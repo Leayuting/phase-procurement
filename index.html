@@ -2657,11 +2657,44 @@ function MobileTabBar({ session, screen, onNavigate }) {
   );
 }
 
+const BUILD_KEY = 'phase_procurement_build';
+
 function App() {
   const [session, setSession] = useState(undefined); // undefined = loading, null = logged out
   const [screen, setScreenState] = useState(() => localStorage.getItem(SCREEN_KEY) || 'dashboard');
   const [pendingDetailId, setPendingDetailId] = useState(null);
   const [pendingFilters, setPendingFilters] = useState(null);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+
+  useEffect(() => {
+    async function checkForUpdate() {
+      try {
+        const res = await fetch(location.pathname, { method: 'HEAD', cache: 'no-store' });
+        const lm = res.headers.get('last-modified');
+        if (!lm) return;
+        const stored = localStorage.getItem(BUILD_KEY);
+        if (stored && stored !== lm) setUpdateAvailable(true);
+        else localStorage.setItem(BUILD_KEY, lm);
+      } catch (e) {}
+    }
+    checkForUpdate();
+    const interval = setInterval(checkForUpdate, 5 * 60 * 1000);
+    function onVisible() { if (!document.hidden) checkForUpdate(); }
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVisible); };
+  }, []);
+
+  function reloadForUpdate() {
+    localStorage.removeItem(BUILD_KEY);
+    window.location.href = location.pathname + '?_=' + Date.now();
+  }
+
+  const updateBanner = updateAvailable ? (
+    <div className="sticky top-0 z-50 bg-brick text-white text-sm px-4 py-2.5 flex items-center justify-between gap-3">
+      <span>有新版本可用</span>
+      <button onClick={reloadForUpdate} className="font-bold underline shrink-0">點此更新</button>
+    </div>
+  ) : null;
 
   function setScreen(next) {
     localStorage.setItem(SCREEN_KEY, next);
@@ -2723,11 +2756,22 @@ function App() {
     setScreenState('dashboard');
   }
 
-  if (session === undefined) return <div className="min-h-screen flex items-center justify-center"><Spinner /></div>;
-  if (session === null) return <LoginScreen onStaffLogin={handleStaffLogin} onAdminLogin={handleAdminLogin} />;
+  if (session === undefined) return (
+    <div className="min-h-screen flex flex-col">
+      {updateBanner}
+      <div className="flex-1 flex items-center justify-center"><Spinner /></div>
+    </div>
+  );
+  if (session === null) return (
+    <div>
+      {updateBanner}
+      <LoginScreen onStaffLogin={handleStaffLogin} onAdminLogin={handleAdminLogin} />
+    </div>
+  );
 
   return (
     <div className="min-h-screen">
+      {updateBanner}
       <NavBar session={session} screen={screen} onNavigate={setScreen} onLogout={handleLogout} />
       <div className="max-w-4xl mx-auto px-4 py-5 pb-20 md:pb-5">
         {screen === 'dashboard' && <Dashboard session={session} onNavigate={setScreen} onOpenRequest={openRequest} onOpenFiltered={openManageFiltered} />}
