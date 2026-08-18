@@ -1217,7 +1217,7 @@ function NewRequest({ session, onNavigate }) {
 
 /* ================= 採購管理（管理者） ================= */
 const STATUS_ORDER = ['pending', 'ordered', 'awaiting', 'partial', 'done', 'exception', 'cancelled'];
-const MANUAL_STATUS_OPTIONS = ['pending', 'ordered', 'awaiting', 'partial', 'exception', 'cancelled'];
+const MANUAL_STATUS_OPTIONS = ['pending', 'ordered', 'awaiting', 'cancelled'];
 
 function ManageFilterBar({ filters, onChange }) {
   function set(patch) { onChange({ ...filters, ...patch }); }
@@ -1482,6 +1482,9 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
   const [editingRemarkId, setEditingRemarkId] = useState(null);
   const [conflictMsg, setConflictMsg] = useState('');
   const [acceptances, setAcceptances] = useState([]);
+  const [showCancelPrompt, setShowCancelPrompt] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelErr, setCancelErr] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1504,7 +1507,7 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
 
   useEffect(() => { load(); }, [load]);
 
-  async function changeStatus(newStatus) {
+  async function changeStatus(newStatus, note) {
     if (!req || newStatus === req.status) return;
     const { data, error } = await sb.from('purchase_requests')
       .update({ status: newStatus, updated_at: new Date().toISOString() })
@@ -1516,9 +1519,17 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
     }
     await sb.from('status_logs').insert({
       request_id: req.id, old_status: req.status, new_status: newStatus,
-      operator_id: session.userId, note: null
+      operator_id: session.userId, note: note || null
     });
     await load();
+  }
+
+  async function confirmCancel() {
+    if (!cancelReason.trim()) { setCancelErr('請填寫取消原因'); return; }
+    setCancelErr('');
+    await changeStatus('cancelled', `取消原因：${cancelReason.trim()}`);
+    setShowCancelPrompt(false);
+    setCancelReason('');
   }
 
   async function saveRemark() {
@@ -1577,7 +1588,7 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
         {canEdit ? (
           <div className="flex flex-wrap gap-2">
             {MANUAL_STATUS_OPTIONS.map(s => (
-              <button key={s} onClick={() => changeStatus(s)}
+              <button key={s} onClick={() => s === 'cancelled' ? setShowCancelPrompt(true) : changeStatus(s)}
                 className={cls('px-3 py-2 rounded-lg text-sm font-medium border transition',
                   req.status === s ? 'text-white border-transparent' : 'border-ink/15 text-ink/60 hover:border-ink/30')}
                 style={req.status === s ? { background: STATUS_META[s].color } : {}}>
@@ -1587,6 +1598,21 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
           </div>
         ) : (
           <StatusPill status={req.status} />
+        )}
+        {showCancelPrompt && (
+          <div className="mt-3 bg-brick/10 border border-brick/30 rounded-lg px-3 py-2.5">
+            <p className="text-xs font-bold text-brick mb-2">請填寫取消原因</p>
+            <input value={cancelReason} onChange={e => setCancelReason(e.target.value)} autoFocus
+              placeholder="例如：門市重複下單、廠商缺貨無法採購"
+              className="w-full px-3 py-2 rounded-lg border border-ink/15 text-sm mb-2" />
+            {cancelErr && <p className="text-brick text-xs mb-2">{cancelErr}</p>}
+            <div className="flex gap-2">
+              <button onClick={() => { setShowCancelPrompt(false); setCancelReason(''); setCancelErr(''); }}
+                className="text-xs text-ink/50 underline">取消</button>
+              <button onClick={confirmCancel}
+                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-brick text-white">確定取消採購單</button>
+            </div>
+          </div>
         )}
         {conflictMsg && <p className="text-brick text-sm mt-2">{conflictMsg}</p>}
       </Card>
