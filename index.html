@@ -42,6 +42,7 @@
   ::-webkit-scrollbar{ width:8px; height:8px; }
   ::-webkit-scrollbar-thumb{ background:#D9D2C9; border-radius:8px; }
   .safe-bottom{ padding-bottom: env(safe-area-inset-bottom); }
+  .tabbar-safe-bottom{ padding-bottom: calc(env(safe-area-inset-bottom) + 10px); }
 </style>
 </head>
 <body class="bg-cream text-ink font-sans">
@@ -853,7 +854,7 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
       )}
 
       {isStaff && (
-        <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent md:safe-bottom">
+        <div className="fixed bottom-[calc(4rem+10px+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent md:safe-bottom">
           <Button variant="brick" className="w-full max-w-md mx-auto flex" onClick={() => onNavigate('new')}>
             快速新增採購
           </Button>
@@ -1199,7 +1200,7 @@ function NewRequest({ session, onNavigate }) {
         className="w-full px-4 py-3 rounded-xl border border-ink/15 bg-white text-[15px] resize-none mb-2" />
       {error && <p className="text-brick text-sm mb-2">{error}</p>}
 
-      <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent md:safe-bottom">
+      <div className="fixed bottom-[calc(4rem+10px+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent md:safe-bottom">
         <Button variant="brick" disabled={submitting} onClick={submit} className="w-full max-w-md mx-auto flex relative">
           {submitting ? '送出中…' : '送出採購'}
           {!submitting && cart.length > 0 && (
@@ -2686,11 +2687,11 @@ function NavBar({ session, screen, onNavigate, onLogout }) {
 function MobileTabBar({ session, screen, onNavigate }) {
   const items = navItemsFor(session);
   return (
-    <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-cream/95 backdrop-blur border-t border-black/5 safe-bottom">
-      <div className="grid h-14" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
+    <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-cream/95 backdrop-blur border-t border-black/5 tabbar-safe-bottom">
+      <div className="grid h-16" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
         {items.map(it => (
           <button key={it.id} onClick={() => onNavigate(it.id)}
-            className={cls('flex items-center justify-center text-[11px] font-medium leading-tight whitespace-nowrap overflow-hidden text-ellipsis px-1',
+            className={cls('flex items-center justify-center text-xs font-medium leading-tight whitespace-nowrap overflow-hidden text-ellipsis px-1 active:bg-black/5',
               screen === it.id ? 'text-brick font-bold' : 'text-ink/50')}>
             {it.label}
           </button>
@@ -2816,7 +2817,7 @@ function App() {
     <div className="min-h-screen">
       {updateBanner}
       <NavBar session={session} screen={screen} onNavigate={setScreen} onLogout={handleLogout} />
-      <div className="max-w-4xl mx-auto px-4 py-5 pb-20 md:pb-5">
+      <div className="max-w-4xl mx-auto px-4 py-5 pb-24 md:pb-5">
         {screen === 'dashboard' && <Dashboard session={session} onNavigate={setScreen} onOpenRequest={openRequest} onOpenFiltered={openManageFiltered} />}
         {screen === 'new' && <NewRequest session={session} onNavigate={setScreen} />}
         {screen === 'manage' && <ManagePage session={session} onNavigate={setScreen} initialRequestId={pendingDetailId} initialFilters={pendingFilters} />}
