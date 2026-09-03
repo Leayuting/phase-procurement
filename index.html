@@ -796,10 +796,12 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
 
   const today = taipeiDateStr();
   const stats = useMemo(() => {
-    const todays = rows.filter(r => taipeiDateStr(new Date(r.created_at)) === today);
-    const pendingToday = todays.filter(r => r.status !== 'done' && r.status !== 'cancelled').length;
-    const buyToday = todays.filter(r => r.status === 'pending').length;
-    const doneToday = todays.filter(r => r.status === 'done').length;
+    const createdToday = rows.filter(r => taipeiDateStr(new Date(r.created_at)) === today);
+    const pendingToday = createdToday.filter(r => r.status !== 'done' && r.status !== 'cancelled').length;
+    const buyToday = createdToday.filter(r => r.status === 'pending').length;
+    // 已完成用「完成當下」的日期（updated_at）算，不是用送單日期——訂單可能不是今天送的，
+    // 但今天才被門市驗收完成，這種情況也要算進「今日完成」
+    const doneToday = rows.filter(r => r.status === 'done' && taipeiDateStr(new Date(r.updated_at)) === today).length;
     return { pendingToday, buyToday, doneToday };
   }, [rows, today]);
 
@@ -824,8 +826,8 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
           onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'all', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
         <StatCard num={stats.buyToday} label="待採購"
           onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'pending', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
-        <StatCard num={stats.doneToday} label="已完成"
-          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'done', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
+        <StatCard num={stats.doneToday} label="今日完成"
+          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'done', dateFrom: '', dateTo: '', productSearch: '' }) : undefined} />
       </div>
 
       <p className="text-sm font-medium text-ink/60 mb-2">最近送出的採購</p>
