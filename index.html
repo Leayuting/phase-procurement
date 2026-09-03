@@ -798,7 +798,8 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
   const stats = useMemo(() => {
     const createdToday = rows.filter(r => taipeiDateStr(new Date(r.created_at)) === today);
     const pendingToday = createdToday.filter(r => r.status !== 'done' && r.status !== 'cancelled').length;
-    const buyToday = createdToday.filter(r => r.status === 'pending').length;
+    // 待採購是目前的待處理總量（不限今天送單的），不然舊單卡在待採購狀態時完全不會被算進去
+    const buyToday = rows.filter(r => r.status === 'pending').length;
     // 已完成用「完成當下」的日期（updated_at）算，不是用送單日期——訂單可能不是今天送的，
     // 但今天才被門市驗收完成，這種情況也要算進「今日完成」
     const doneToday = rows.filter(r => r.status === 'done' && taipeiDateStr(new Date(r.updated_at)) === today).length;
@@ -825,7 +826,7 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
         <StatCard num={stats.pendingToday} label="今日待處理"
           onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'all', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
         <StatCard num={stats.buyToday} label="待採購"
-          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'pending', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
+          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'pending', dateFrom: '', dateTo: '', productSearch: '' }) : undefined} />
         <StatCard num={stats.doneToday} label="今日完成"
           onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'done', dateFrom: '', dateTo: '', productSearch: '' }) : undefined} />
       </div>
