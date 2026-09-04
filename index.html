@@ -61,21 +61,25 @@ const PIN_LENGTH = 8;
 const SESSION_KEY = 'phase_procurement_staff_session';
 const SCREEN_KEY = 'phase_procurement_screen';
 
+// 整單狀態：唯讀，由資料庫 trigger（recalc_request_status）依商品狀態自動算出，前端不寫入
 const STATUS_META = {
   pending:   { label: '待採購',   color: '#A9754A' },
-  ordered:   { label: '已下單',   color: '#5E6770' },
-  awaiting:  { label: '待到貨',   color: '#D4870A' },
+  ordering:  { label: '採購中',   color: '#5E6770' },
   partial:   { label: '部分到貨', color: '#4A6FA5' },
   done:      { label: '完成',     color: '#4E5747' },
-  exception: { label: '異常',     color: '#B5402A' },
   cancelled: { label: '取消',     color: '#8C8378' }
 };
-const ACCEPTANCE_RESULT_META = {
-  full:         { label: '全部收到',     status: 'done' },
-  partial:      { label: '部分收到',     status: 'partial' },
-  qty_mismatch: { label: '數量不符',     status: 'exception' },
-  damaged:      { label: '商品錯誤／破損', status: 'exception' }
+// 單項商品狀態：待採購/採購中/缺貨未採購/取消由採購或管理者手動設定；
+// 已到貨/部分到貨只能透過門市簽名驗收流程設定（見 AcceptanceModal）
+const ITEM_STATUS_META = {
+  pending:      { label: '待採購',     color: '#A9754A' },
+  ordering:     { label: '採購中',     color: '#5E6770' },
+  arrived:      { label: '已到貨',     color: '#4E5747' },
+  partial:      { label: '部分到貨',   color: '#4A6FA5' },
+  stock_issue:  { label: '缺貨／未採購', color: '#B5402A' },
+  cancelled:    { label: '已取消',     color: '#8C8378' }
 };
+const ITEM_STATUS_OPTIONS = ['pending', 'ordering', 'arrived', 'partial', 'stock_issue', 'cancelled'];
 
 /* ================= 小工具 ================= */
 async function sha256Hex(text) {
@@ -544,40 +548,75 @@ function SignaturePad({ onChange }) {
   );
 }
 
-const ACCEPTANCE_RESULT_OPTIONS = [
-  { value: 'full', label: '全部收到' },
-  { value: 'partial', label: '部分收到' },
-  { value: 'qty_mismatch', label: '數量不符' },
-  { value: 'damaged', label: '商品錯誤／破損' }
+const DELIVERY_CHOICE_OPTIONS = [
+  { value: 'unchanged', label: '尚未到貨' },
+  { value: 'arrived', label: '已到貨' },
+  { value: 'partial', label: '部分到貨' },
+  { value: 'issue', label: '有問題' }
 ];
 
-function AcceptanceModal({ request, onClose, onDone }) {
-  const [result, setResult] = useState(null);
+function AcceptanceModal({ request, items, onClose, onDone }) {
+  const [choices, setChoices] = useState(() => {
+    const init = {};
+    items.forEach(it => { init[it.id] = { choice: 'unchanged', arrivedQty: '', note: '' }; });
+    return init;
+  });
   const [acceptedBy, setAcceptedBy] = useState('');
   const [signature, setSignature] = useState(null);
-  const [note, setNote] = useState('');
   const [err, setErr] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  function setChoice(itemId, patch) {
+    setChoices(prev => ({ ...prev, [itemId]: { ...prev[itemId], ...patch } }));
+  }
+
   async function submit() {
     setErr('');
-    if (!result) { setErr('請選擇驗收結果'); return; }
     if (!acceptedBy.trim()) { setErr('請填寫驗收人姓名'); return; }
     if (!signature) { setErr('請簽名'); return; }
+    for (const it of items) {
+      const c = choices[it.id];
+      if (c.choice === 'partial') {
+        const n = parseInt(c.arrivedQty, 10);
+        if (!n || n < 1 || n >= it.quantity) { setErr(`「${it.product_name}」的到貨數量請填 1～${it.quantity - 1}`); return; }
+      }
+    }
     setSubmitting(true);
-    const newStatus = ACCEPTANCE_RESULT_META[result].status;
+    const now = new Date().toISOString();
+    let allArrived = true;
+    let anyChanged = false;
+    const snapshot = [];
+    for (const it of items) {
+      const c = choices[it.id];
+      snapshot.push({ item_id: it.id, product_name: it.product_name, choice: c.choice, arrived_qty: c.arrivedQty || null, note: c.note || null });
+      if (c.choice === 'unchanged') { allArrived = false; continue; }
+      anyChanged = true;
+      if (c.choice === 'arrived') {
+        await sb.from('purchase_items').update({
+          item_status: 'arrived', arrived_qty: it.quantity,
+          item_status_updated_by: null, item_status_updated_at: now
+        }).eq('id', it.id);
+      } else if (c.choice === 'partial') {
+        allArrived = false;
+        await sb.from('purchase_items').update({
+          item_status: 'partial', arrived_qty: parseInt(c.arrivedQty, 10),
+          item_status_updated_by: null, item_status_updated_at: now
+        }).eq('id', it.id);
+      } else if (c.choice === 'issue') {
+        allArrived = false;
+        await sb.from('purchase_items').update({
+          item_remark: c.note.trim() || '驗收時發現問題',
+          item_remark_updated_at: now, item_remark_updated_by: null, item_remark_acked_at: null
+        }).eq('id', it.id);
+      }
+    }
     const { error: accError } = await sb.from('acceptance_records').insert({
-      request_id: request.id, result, accepted_by: acceptedBy.trim(), signature, note: note.trim() || null
-    });
-    if (accError) { setSubmitting(false); setErr('送出失敗，請稍後再試'); return; }
-    await sb.from('purchase_requests').update({ status: newStatus, updated_at: new Date().toISOString() })
-      .eq('id', request.id).eq('status', request.status);
-    await sb.from('status_logs').insert({
-      request_id: request.id, old_status: request.status, new_status: newStatus, operator_id: null,
-      note: `門市驗收：${ACCEPTANCE_RESULT_META[result].label}（驗收人：${acceptedBy.trim()}）`
+      request_id: request.id, result: allArrived && anyChanged ? 'full' : 'partial',
+      accepted_by: acceptedBy.trim(), signature, note: null, items_snapshot: snapshot
     });
     setSubmitting(false);
-    onDone(newStatus);
+    if (accError) { setErr('送出失敗，請稍後再試'); return; }
+    onDone();
   }
 
   return (
@@ -585,32 +624,51 @@ function AcceptanceModal({ request, onClose, onDone }) {
       <div className="bg-cream w-full md:max-w-md rounded-t-2xl md:rounded-2xl p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <p className="text-lg font-bold mb-1">是否確認商品已收到？</p>
         <p className="text-xs text-ink/40 mb-4">{request.request_no}</p>
-        <div className="grid grid-cols-2 gap-2 mb-4">
-          {ACCEPTANCE_RESULT_OPTIONS.map(o => (
-            <button key={o.value} type="button" onClick={() => setResult(o.value)}
-              className={cls('px-3 py-3 rounded-xl text-sm font-medium border transition text-center',
-                result === o.value ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/70')}>
-              {o.label}
-            </button>
-          ))}
+        <div className="flex flex-col gap-3 mb-4">
+          {items.map(it => {
+            const c = choices[it.id];
+            return (
+              <div key={it.id} className="border border-black/10 rounded-xl p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm font-medium">{it.product_name}</p>
+                  <p className="text-xs text-ink/40">訂購 × {it.quantity}</p>
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {DELIVERY_CHOICE_OPTIONS.map(o => (
+                    <button key={o.value} type="button" onClick={() => setChoice(it.id, { choice: o.value })}
+                      className={cls('px-1.5 py-2 rounded-lg text-xs font-medium border transition text-center',
+                        c.choice === o.value ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/70')}>
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+                {c.choice === 'partial' && (
+                  <input type="number" inputMode="numeric" value={c.arrivedQty}
+                    onChange={e => setChoice(it.id, { arrivedQty: e.target.value })}
+                    placeholder={`到貨數量（訂購 ${it.quantity}）`}
+                    className="w-full mt-2 px-3 py-2 rounded-lg border border-ink/15 text-sm" />
+                )}
+                {c.choice === 'issue' && (
+                  <input value={c.note} onChange={e => setChoice(it.id, { note: e.target.value })}
+                    placeholder="說明問題（如：數量不符、商品破損）"
+                    className="w-full mt-2 px-3 py-2 rounded-lg border border-ink/15 text-sm" />
+                )}
+              </div>
+            );
+          })}
         </div>
-        {result && (
-          <div className="flex flex-col gap-2.5">
-            <input placeholder="驗收人姓名" value={acceptedBy} onChange={e => setAcceptedBy(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
-            <SignaturePad onChange={setSignature} />
-            <textarea placeholder="備註（選填）" value={note} onChange={e => setNote(e.target.value)} rows={2}
-              className="w-full px-3 py-2.5 rounded-lg border border-ink/15 text-[15px] resize-none" />
-            {err && <p className="text-brick text-sm">{err}</p>}
-            <div className="flex gap-2 mt-1">
-              <Button variant="subtle" className="flex-1" onClick={onClose}>取消</Button>
-              <Button variant="brick" className="flex-1" disabled={submitting} onClick={submit}>
-                {submitting ? '送出中…' : '送出驗收'}
-              </Button>
-            </div>
+        <div className="flex flex-col gap-2.5">
+          <input placeholder="驗收人姓名" value={acceptedBy} onChange={e => setAcceptedBy(e.target.value)}
+            className="w-full px-3 py-2.5 rounded-lg border border-ink/15 text-[15px]" />
+          <SignaturePad onChange={setSignature} />
+          {err && <p className="text-brick text-sm">{err}</p>}
+          <div className="flex gap-2 mt-1">
+            <Button variant="subtle" className="flex-1" onClick={onClose}>取消</Button>
+            <Button variant="brick" className="flex-1" disabled={submitting} onClick={submit}>
+              {submitting ? '送出中…' : '送出驗收'}
+            </Button>
           </div>
-        )}
-        {!result && err && <p className="text-brick text-sm mt-2">{err}</p>}
+        </div>
       </div>
     </div>
   );
@@ -619,7 +677,7 @@ function AcceptanceModal({ request, onClose, onDone }) {
 function RequestItemsInline({ request, onAcked }) {
   const [items, setItems] = useState(null);
   const [orderedAt, setOrderedAt] = useState(null);
-  const [localStatus, setLocalStatus] = useState(null);
+  const [actionDone, setActionDone] = useState(null); // null | 'cancelled' | 'accepted'
   const [cancelExpanded, setCancelExpanded] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [showAccept, setShowAccept] = useState(false);
@@ -627,7 +685,7 @@ function RequestItemsInline({ request, onAcked }) {
   const load = useCallback(async () => {
     const [{ data: itemData }, { data: logData }] = await Promise.all([
       sb.from('purchase_items').select('*').eq('request_id', request.id).order('id'),
-      sb.from('status_logs').select('created_at').eq('request_id', request.id).eq('new_status', 'ordered')
+      sb.from('status_logs').select('created_at').eq('request_id', request.id).eq('new_status', 'ordering')
         .order('created_at', { ascending: true }).limit(1)
     ]);
     setItems(itemData || []);
@@ -635,7 +693,7 @@ function RequestItemsInline({ request, onAcked }) {
   }, [request.id]);
   useEffect(() => { load(); }, [load]);
 
-  const effectiveStatus = localStatus || request.status;
+  const effectiveStatus = request.status;
 
   async function ackStockIssue(itemId) {
     await sb.from('purchase_items').update({ stock_issue_acked_at: new Date().toISOString() }).eq('id', itemId);
@@ -650,19 +708,16 @@ function RequestItemsInline({ request, onAcked }) {
 
   async function cancelRequest() {
     setCancelling(true);
-    const { data } = await sb.from('purchase_requests')
-      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
-      .eq('id', request.id).eq('status', 'pending').select();
-    if (data && data.length > 0) {
-      await sb.from('status_logs').insert({
-        request_id: request.id, old_status: 'pending', new_status: 'cancelled', operator_id: null,
-        note: `門市自行取消（送單人：${request.applicant_name || '—'}）`
-      });
-      setLocalStatus('cancelled');
-    }
+    await sb.from('purchase_items').update({ item_status: 'cancelled' })
+      .eq('request_id', request.id).neq('item_status', 'cancelled');
+    setActionDone('cancelled');
     setCancelling(false);
     setCancelExpanded(false);
+    load();
+    if (onAcked) onAcked();
   }
+
+  const eligibleForAccept = (items || []).filter(it => ['ordering', 'partial', 'stock_issue'].includes(it.item_status));
 
   return (
     <div className="border-t border-black/5 mt-3 pt-3" onClick={e => e.stopPropagation()}>
@@ -675,8 +730,17 @@ function RequestItemsInline({ request, onAcked }) {
             <div key={it.id}>
               <div className="flex items-center justify-between">
                 <p className="text-[15px]">{it.product_name}</p>
-                <p className="text-sm text-ink/50">× {it.quantity}</p>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold px-2 py-0.5 rounded-full text-white"
+                    style={{ background: (ITEM_STATUS_META[it.item_status] || {}).color || '#999' }}>
+                    {(ITEM_STATUS_META[it.item_status] || {}).label || it.item_status}
+                  </span>
+                  <p className="text-sm text-ink/50">× {it.quantity}</p>
+                </div>
               </div>
+              {it.item_status === 'partial' && (
+                <p className="text-xs text-ink/40 mt-0.5">已到貨 {it.arrived_qty}／訂購 {it.quantity}，尚缺 {it.quantity - it.arrived_qty}</p>
+              )}
               {it.source && <p className="text-xs text-ink/40 mt-0.5">來源：{it.source}</p>}
               {it.item_remark && (
                 it.item_remark_acked_at ? (
@@ -691,7 +755,7 @@ function RequestItemsInline({ request, onAcked }) {
                   </div>
                 )
               )}
-              {it.stock_issue && (
+              {it.item_status === 'stock_issue' && (
                 it.stock_issue_acked_at ? (
                   <p className="text-xs text-ink/30 mt-1">已知悉：缺貨/未採購</p>
                 ) : (
@@ -708,7 +772,7 @@ function RequestItemsInline({ request, onAcked }) {
           ))}
           {request.remark && <p className="text-xs text-ink/40 pt-1 border-t border-black/5 mt-1">整單備註：{request.remark}</p>}
 
-          {effectiveStatus === 'pending' && (
+          {!actionDone && effectiveStatus === 'pending' && (
             <div className="pt-1 border-t border-black/5 mt-1">
               {!cancelExpanded ? (
                 <button onClick={() => setCancelExpanded(true)} className="text-xs font-medium text-brick underline">
@@ -729,23 +793,23 @@ function RequestItemsInline({ request, onAcked }) {
             </div>
           )}
 
-          {(effectiveStatus === 'awaiting' || effectiveStatus === 'partial') && (
+          {!actionDone && (effectiveStatus === 'ordering' || effectiveStatus === 'partial') && eligibleForAccept.length > 0 && (
             <div className="pt-1 border-t border-black/5 mt-1">
               <Button variant="brick" className="w-full" onClick={() => setShowAccept(true)}>驗收</Button>
             </div>
           )}
-          {effectiveStatus === 'done' && localStatus === 'done' && (
-            <p className="text-xs text-[#4E5747] font-medium pt-1 border-t border-black/5 mt-1">✓ 已完成驗收</p>
+          {actionDone === 'accepted' && (
+            <p className="text-xs text-[#4E5747] font-medium pt-1 border-t border-black/5 mt-1">✓ 已送出驗收</p>
           )}
-          {effectiveStatus === 'cancelled' && localStatus === 'cancelled' && (
+          {actionDone === 'cancelled' && (
             <p className="text-xs text-ink/40 pt-1 border-t border-black/5 mt-1">已取消</p>
           )}
         </div>
       )}
       {showAccept && (
-        <AcceptanceModal request={{ ...request, status: effectiveStatus }}
+        <AcceptanceModal request={request} items={eligibleForAccept}
           onClose={() => setShowAccept(false)}
-          onDone={(newStatus) => { setLocalStatus(newStatus); setShowAccept(false); load(); if (onAcked) onAcked(); }} />
+          onDone={() => { setShowAccept(false); setActionDone('accepted'); load(); if (onAcked) onAcked(); }} />
       )}
     </div>
   );
@@ -772,7 +836,7 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
 
   const loadFlags = useCallback(async () => {
     const [{ data: stockData }, { data: remarkData }] = await Promise.all([
-      sb.from('purchase_items').select('request_id').eq('stock_issue', true).is('stock_issue_acked_at', null),
+      sb.from('purchase_items').select('request_id').eq('item_status', 'stock_issue').is('stock_issue_acked_at', null),
       sb.from('purchase_items').select('request_id').not('item_remark', 'is', null).is('item_remark_acked_at', null)
     ]);
     setFlaggedIds(new Set([...(stockData || []), ...(remarkData || [])].map(d => d.request_id)));
@@ -1025,7 +1089,7 @@ function NewRequest({ session, onNavigate }) {
       .select('quantity, request_id, purchase_requests!inner(request_no, applicant_name, created_at, status, store)')
       .eq('product_name', productName)
       .eq('purchase_requests.store', session.store)
-      .in('purchase_requests.status', ['pending', 'ordered', 'awaiting', 'partial']);
+      .in('purchase_requests.status', ['pending', 'ordering', 'partial']);
     return data || [];
   }
 
@@ -1222,8 +1286,7 @@ function NewRequest({ session, onNavigate }) {
 }
 
 /* ================= 採購管理（管理者） ================= */
-const STATUS_ORDER = ['pending', 'ordered', 'awaiting', 'partial', 'done', 'exception', 'cancelled'];
-const MANUAL_STATUS_OPTIONS = ['pending', 'ordered', 'awaiting', 'cancelled'];
+const STATUS_ORDER = ['pending', 'ordering', 'partial', 'done', 'cancelled'];
 
 function ManageFilterBar({ filters, onChange }) {
   function set(patch) { onChange({ ...filters, ...patch }); }
@@ -1274,7 +1337,7 @@ function MonthlySummary({ store, onBack }) {
       .select('product_name, quantity, request_id, purchase_requests!inner(store, created_at, status), products(unit, supplier)')
       .gte('purchase_requests.created_at', startIso)
       .lt('purchase_requests.created_at', endIso)
-      .in('purchase_requests.status', ['ordered', 'awaiting', 'partial', 'done']);
+      .in('purchase_requests.status', ['ordering', 'partial', 'done']);
     if (store !== 'all') q = q.eq('purchase_requests.store', store);
     q.then(({ data, error }) => {
       setRows(error ? [] : data || []);
@@ -1486,12 +1549,14 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
   const [remarkDraft, setRemarkDraft] = useState('');
   const [itemDrafts, setItemDrafts] = useState({});
   const [editingRemarkId, setEditingRemarkId] = useState(null);
-  const [conflictMsg, setConflictMsg] = useState('');
   const [acceptances, setAcceptances] = useState([]);
   const [zoomSignature, setZoomSignature] = useState(null);
   const [showCancelPrompt, setShowCancelPrompt] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelErr, setCancelErr] = useState('');
+  const [partialPromptId, setPartialPromptId] = useState(null);
+  const [partialQtyDraft, setPartialQtyDraft] = useState('');
+  const [partialErr, setPartialErr] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1514,29 +1579,46 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
 
   useEffect(() => { load(); }, [load]);
 
-  async function changeStatus(newStatus, note) {
-    if (!req || newStatus === req.status) return;
-    const { data, error } = await sb.from('purchase_requests')
-      .update({ status: newStatus, updated_at: new Date().toISOString() })
-      .eq('id', req.id).eq('status', req.status).select();
-    if (error || !data || data.length === 0) {
-      setConflictMsg('此筆資料剛被其他人更新，已重新整理');
-      await load();
-      return;
-    }
-    await sb.from('status_logs').insert({
-      request_id: req.id, old_status: req.status, new_status: newStatus,
-      operator_id: session.userId, note: note || null
-    });
-    await load();
-  }
-
   async function confirmCancel() {
     if (!cancelReason.trim()) { setCancelErr('請填寫取消原因'); return; }
     setCancelErr('');
-    await changeStatus('cancelled', `取消原因：${cancelReason.trim()}`);
+    await sb.from('purchase_items').update({
+      item_status: 'cancelled', item_status_updated_by: session.userId, item_status_updated_at: new Date().toISOString()
+    }).eq('request_id', req.id).neq('item_status', 'cancelled');
+    await sb.from('status_logs').insert({
+      request_id: req.id, old_status: req.status, new_status: 'cancelled',
+      operator_id: session.userId, note: `取消原因：${cancelReason.trim()}`
+    });
     setShowCancelPrompt(false);
     setCancelReason('');
+    await load();
+  }
+
+  async function setItemStatus(item, newStatus) {
+    if (newStatus === item.item_status) return;
+    if (newStatus === 'partial') {
+      setPartialPromptId(item.id);
+      setPartialQtyDraft(String(item.arrived_qty || ''));
+      setPartialErr('');
+      return;
+    }
+    await sb.from('purchase_items').update({
+      item_status: newStatus,
+      arrived_qty: newStatus === 'arrived' ? item.quantity : 0,
+      item_status_updated_by: session.userId, item_status_updated_at: new Date().toISOString()
+    }).eq('id', item.id);
+    await load();
+  }
+
+  async function confirmPartialQty(item) {
+    const n = parseInt(partialQtyDraft, 10);
+    if (!n || n < 1 || n >= item.quantity) { setPartialErr(`請填 1～${item.quantity - 1}`); return; }
+    await sb.from('purchase_items').update({
+      item_status: 'partial', arrived_qty: n,
+      item_status_updated_by: session.userId, item_status_updated_at: new Date().toISOString()
+    }).eq('id', item.id);
+    setPartialPromptId(null);
+    await load();
   }
 
   async function saveRemark() {
@@ -1569,15 +1651,6 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
     await load();
   }
 
-  async function toggleStockIssue(item) {
-    const next = !item.stock_issue;
-    await sb.from('purchase_items').update({
-      stock_issue: next,
-      stock_issue_acked_at: null
-    }).eq('id', item.id);
-    await load();
-  }
-
   if (loading || !req) return <Spinner />;
 
   return (
@@ -1592,36 +1665,29 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
 
       <Card className="p-4 mb-4">
         <p className="text-sm font-bold mb-3">狀態</p>
-        {canEdit ? (
-          <div className="flex flex-wrap gap-2">
-            {MANUAL_STATUS_OPTIONS.map(s => (
-              <button key={s} onClick={() => s === 'cancelled' ? setShowCancelPrompt(true) : changeStatus(s)}
-                className={cls('px-3 py-2 rounded-lg text-sm font-medium border transition',
-                  req.status === s ? 'text-white border-transparent' : 'border-ink/15 text-ink/60 hover:border-ink/30')}
-                style={req.status === s ? { background: STATUS_META[s].color } : {}}>
-                {STATUS_META[s].label}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <StatusPill status={req.status} />
-        )}
-        {showCancelPrompt && (
-          <div className="mt-3 bg-brick/10 border border-brick/30 rounded-lg px-3 py-2.5">
-            <p className="text-xs font-bold text-brick mb-2">請填寫取消原因</p>
-            <input value={cancelReason} onChange={e => setCancelReason(e.target.value)} autoFocus
-              placeholder="例如：門市重複下單、廠商缺貨無法採購"
-              className="w-full px-3 py-2 rounded-lg border border-ink/15 text-sm mb-2" />
-            {cancelErr && <p className="text-brick text-xs mb-2">{cancelErr}</p>}
-            <div className="flex gap-2">
-              <button onClick={() => { setShowCancelPrompt(false); setCancelReason(''); setCancelErr(''); }}
-                className="text-xs text-ink/50 underline">取消</button>
-              <button onClick={confirmCancel}
-                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-brick text-white">確定取消採購單</button>
+        <StatusPill status={req.status} />
+        <p className="text-xs text-ink/30 mt-2">整單狀態依商品狀態自動判斷，不能手動切換</p>
+        {canEdit && req.status !== 'cancelled' && req.status !== 'done' && (
+          !showCancelPrompt ? (
+            <button onClick={() => setShowCancelPrompt(true)} className="text-xs font-medium text-brick underline mt-3">
+              取消整張採購單
+            </button>
+          ) : (
+            <div className="mt-3 bg-brick/10 border border-brick/30 rounded-lg px-3 py-2.5">
+              <p className="text-xs font-bold text-brick mb-2">請填寫取消原因</p>
+              <input value={cancelReason} onChange={e => setCancelReason(e.target.value)} autoFocus
+                placeholder="例如：門市重複下單、廠商缺貨無法採購"
+                className="w-full px-3 py-2 rounded-lg border border-ink/15 text-sm mb-2" />
+              {cancelErr && <p className="text-brick text-xs mb-2">{cancelErr}</p>}
+              <div className="flex gap-2">
+                <button onClick={() => { setShowCancelPrompt(false); setCancelReason(''); setCancelErr(''); }}
+                  className="text-xs text-ink/50 underline">取消</button>
+                <button onClick={confirmCancel}
+                  className="text-xs font-bold px-3 py-1.5 rounded-lg bg-brick text-white">確定取消採購單</button>
+              </div>
             </div>
-          </div>
+          )
         )}
-        {conflictMsg && <p className="text-brick text-sm mt-2">{conflictMsg}</p>}
       </Card>
 
       <Card className="p-4 mb-4">
@@ -1634,18 +1700,37 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
                 <p className="text-sm text-ink/50">× {it.quantity}</p>
               </div>
               {it.source && <p className="text-xs text-ink/40 mt-0.5">來源：{it.source}{it.url ? '　' : ''}{it.url && <a href={it.url} target="_blank" rel="noreferrer" className="underline">連結</a>}</p>}
-              <div className="mt-2">
-                <button onClick={() => toggleStockIssue(it)}
-                  className={cls('text-xs font-bold px-2.5 py-1 rounded-full border transition',
-                    it.stock_issue ? 'bg-brick text-white border-brick' : 'border-ink/15 text-ink/40')}>
-                  {it.stock_issue ? '⚠ 缺貨未採購（點擊取消標記）' : '標記缺貨/未採購'}
-                </button>
-                {it.stock_issue && (
-                  <span className="text-[11px] text-ink/30 ml-2">
-                    {it.stock_issue_acked_at ? '門市已知悉 · ' + fmtDateTime(it.stock_issue_acked_at) : '門市尚未知悉'}
-                  </span>
-                )}
+              {it.item_status === 'partial' && (
+                <p className="text-xs text-ink/40 mt-0.5">已到貨 {it.arrived_qty}／訂購 {it.quantity}，尚缺 {it.quantity - it.arrived_qty}</p>
+              )}
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {ITEM_STATUS_OPTIONS.map(s => (
+                  <button key={s} onClick={() => setItemStatus(it, s)}
+                    className={cls('text-xs font-bold px-2.5 py-1 rounded-full border transition',
+                      it.item_status === s ? 'text-white border-transparent' : 'border-ink/15 text-ink/50')}
+                    style={it.item_status === s ? { background: ITEM_STATUS_META[s].color } : {}}>
+                    {ITEM_STATUS_META[s].label}
+                  </button>
+                ))}
               </div>
+              {partialPromptId === it.id && (
+                <div className="mt-2 bg-black/5 rounded-lg px-3 py-2.5">
+                  <p className="text-xs font-medium mb-1.5">到貨數量（訂購 {it.quantity}）</p>
+                  <div className="flex items-center gap-2">
+                    <input type="number" inputMode="numeric" value={partialQtyDraft} autoFocus
+                      onChange={e => setPartialQtyDraft(e.target.value)}
+                      className="w-24 px-3 py-1.5 rounded-lg border border-ink/15 text-sm" />
+                    <button onClick={() => confirmPartialQty(it)} className="text-xs text-ink/60 underline">儲存</button>
+                    <button onClick={() => { setPartialPromptId(null); setPartialErr(''); }} className="text-xs text-ink/30 underline">取消</button>
+                  </div>
+                  {partialErr && <p className="text-brick text-xs mt-1">{partialErr}</p>}
+                </div>
+              )}
+              {it.item_status === 'stock_issue' && (
+                <p className="text-[11px] text-ink/30 mt-1">
+                  {it.stock_issue_acked_at ? '門市已知悉 · ' + fmtDateTime(it.stock_issue_acked_at) : '門市尚未知悉'}
+                </p>
+              )}
               <div className="mt-2">
                 {editingRemarkId === it.id ? (
                   <div className="flex items-center gap-2">
@@ -1714,12 +1799,15 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
               <div key={a.id} className="flex items-start gap-3 border-b border-black/5 last:border-0 pb-3 last:pb-0">
                 <img src={a.signature} alt="簽名" onClick={() => setZoomSignature(a.signature)}
                   className="w-24 h-12 object-contain border border-ink/10 rounded bg-white shrink-0 cursor-zoom-in" />
-                <div className="min-w-0">
-                  <p className="text-sm">
-                    <span className="font-medium">{a.accepted_by}</span>
-                    {' '}驗收結果：<span className="font-medium">{ACCEPTANCE_RESULT_META[a.result]?.label || a.result}</span>
-                  </p>
-                  {a.note && <p className="text-xs text-ink/50 mt-0.5">備註：{a.note}</p>}
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{a.accepted_by}</p>
+                  {(a.items_snapshot || []).filter(s => s.choice !== 'unchanged').map((s, i) => (
+                    <p key={i} className="text-xs text-ink/60 mt-0.5">
+                      {s.product_name}：{DELIVERY_CHOICE_OPTIONS.find(o => o.value === s.choice)?.label || s.choice}
+                      {s.choice === 'partial' && s.arrived_qty ? `（到貨 ${s.arrived_qty}）` : ''}
+                      {s.choice === 'issue' && s.note ? `（${s.note}）` : ''}
+                    </p>
+                  ))}
                   <p className="text-xs text-ink/30 mt-0.5">{fmtDateTime(a.created_at)}</p>
                 </div>
               </div>
