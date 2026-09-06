@@ -690,7 +690,7 @@ function AcceptanceModal({ request, items, onClose, onDone }) {
   );
 }
 
-function RequestItemsInline({ request, onAcked }) {
+function RequestItemsInline({ request, onAcked, onCompleted }) {
   const [items, setItems] = useState(null);
   const [orderedAt, setOrderedAt] = useState(null);
   const [actionDone, setActionDone] = useState(null); // null | 'cancelled' | 'accepted'
@@ -849,30 +849,91 @@ function RequestItemsInline({ request, onAcked }) {
       {showAccept && (
         <AcceptanceModal request={request} items={eligibleForAccept}
           onClose={() => setShowAccept(false)}
-          onDone={() => { setShowAccept(false); setActionDone('accepted'); load(); if (onAcked) onAcked(); }} />
+          onDone={async () => {
+            setShowAccept(false);
+            setActionDone('accepted');
+            await load();
+            if (onAcked) onAcked();
+            const { data } = await sb.from('purchase_requests').select('status').eq('id', request.id).single();
+            if (data && data.status === 'done' && onCompleted) onCompleted(request.id);
+          }} />
       )}
     </div>
   );
 }
 
-function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
-  const [expandedId, setExpandedId] = useState(null);
-  const [loading, setLoading] = useState(true);
+function StaffDashboard({ session, onNavigate }) {
+  const [tab, setTab] = useState('active');
+  const [filters, setFilters] = useState({ dateFrom: '', dateTo: '', search: '' });
   const [rows, setRows] = useState([]);
-  const [storeFilter, setStoreFilter] = useState('all');
-  const isStaff = session.role === 'staff';
-  const canViewAll = session.role === 'admin' || session.role === 'purchaser';
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [expandedId, setExpandedId] = useState(null);
   const [flaggedIds, setFlaggedIds] = useState(new Set());
+  const [completedToast, setCompletedToast] = useState(false);
+  const [statsRows, setStatsRows] = useState([]);
+
+  function switchTab(next) {
+    setTab(next);
+    if (next === 'history' && !filters.dateFrom && !filters.dateTo) {
+      setFilters(f => ({ ...f, dateFrom: daysAgoStr(29), dateTo: taipeiDateStr() }));
+    }
+  }
+  function showAllTime() { setFilters(f => ({ ...f, dateFrom: '', dateTo: '' })); }
+  function clearFilters() { setFilters({ dateFrom: '', dateTo: '', search: '' }); }
+
+  // 門市權限一律鎖定在自己的門市：清單查詢、搜尋比對都固定 eq('store', session.store)，
+  // 不提供門市選擇，確保跟既有「門市只能看自己門市」的權限一致
+  const buildQuery = useCallback((matchIds) => {
+    let q = sb.from('purchase_requests').select('*', { count: 'exact' }).eq('store', session.store).order('created_at', { ascending: false });
+    q = tab === 'history' ? q.in('status', HISTORY_SUB_STATUSES) : q.not('status', 'in', '(done,cancelled)');
+    if (filters.dateFrom) q = q.gte('created_at', taipeiDayToUtc(filters.dateFrom, false));
+    if (filters.dateTo) q = q.lte('created_at', taipeiDayToUtc(filters.dateTo, true));
+    if (matchIds) q = q.in('id', matchIds);
+    return q;
+  }, [tab, filters, session.store]);
+
+  async function findMatchIds() {
+    const term = filters.search.trim();
+    if (!term) return null;
+    const [{ data: itemRows }, { data: reqRows }] = await Promise.all([
+      sb.from('purchase_items').select('request_id, purchase_requests!inner(store)')
+        .ilike('product_name', `%${term}%`).eq('purchase_requests.store', session.store),
+      sb.from('purchase_requests').select('id').eq('store', session.store).ilike('request_no', `%${term}%`)
+    ]);
+    return Array.from(new Set([...(itemRows || []).map(r => r.request_id), ...(reqRows || []).map(r => r.id)]));
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
-    let q = sb.from('purchase_requests').select('*').order('created_at', { ascending: false }).limit(50);
-    if (isStaff) q = q.eq('store', session.store);
-    else if (storeFilter !== 'all') q = q.eq('store', storeFilter);
-    const { data, error } = await q;
-    setRows(error ? [] : data);
+    const matchIds = await findMatchIds();
+    if (matchIds && matchIds.length === 0) { setRows([]); setHasMore(false); setLoading(false); return; }
+    const pageSize = tab === 'history' ? MANAGE_PAGE_SIZE : 300;
+    const { data, error, count } = await buildQuery(matchIds).range(0, pageSize - 1);
+    setRows(error ? [] : (data || []));
+    setHasMore(!error && tab === 'history' && (count || 0) > pageSize);
     setLoading(false);
-  }, [isStaff, session.store, storeFilter]);
+  }, [filters, tab, buildQuery]);
+
+  async function loadMore() {
+    setLoadingMore(true);
+    const matchIds = await findMatchIds();
+    const from = rows.length;
+    const { data, error, count } = await buildQuery(matchIds).range(from, from + MANAGE_PAGE_SIZE - 1);
+    if (!error) {
+      setRows(prev => [...prev, ...(data || [])]);
+      setHasMore((count || 0) > from + (data || []).length);
+    }
+    setLoadingMore(false);
+  }
+
+  // 統計卡片獨立查詢（不受分頁/篩選影響，維持原本「今日待處理／待採購／今日完成」邏輯）
+  const loadStats = useCallback(async () => {
+    const { data } = await sb.from('purchase_requests').select('status,created_at,updated_at')
+      .eq('store', session.store).order('created_at', { ascending: false }).limit(50);
+    setStatsRows(data || []);
+  }, [session.store]);
 
   const loadFlags = useCallback(async () => {
     const [{ data: stockData }, { data: remarkData }] = await Promise.all([
@@ -883,20 +944,158 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { if (isStaff) loadFlags(); }, [isStaff, loadFlags]);
+  useEffect(() => { loadStats(); }, [loadStats]);
+  useEffect(() => { loadFlags(); }, [loadFlags]);
+  useEffect(() => {
+    const ch = sb.channel('staff-dashboard-requests')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requests' }, () => { load(); loadStats(); })
+      .subscribe();
+    return () => { sb.removeChannel(ch); };
+  }, [load, loadStats]);
+  useEffect(() => {
+    const ch = sb.channel('staff-dashboard-stock-issues')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_items' }, loadFlags)
+      .subscribe();
+    return () => { sb.removeChannel(ch); };
+  }, [loadFlags]);
+
+  function handleCompleted() {
+    setCompletedToast(true);
+    load();
+    loadStats();
+  }
+
+  const today = taipeiDateStr();
+  const stats = useMemo(() => {
+    const createdToday = statsRows.filter(r => taipeiDateStr(new Date(r.created_at)) === today);
+    const pendingToday = createdToday.filter(r => !isClosedStatus(r.status)).length;
+    const buyToday = statsRows.filter(r => r.status === 'pending').length;
+    const doneToday = statsRows.filter(r => r.status === 'done' && taipeiDateStr(new Date(r.updated_at)) === today).length;
+    return { pendingToday, buyToday, doneToday };
+  }, [statsRows, today]);
+
+  const isAllTime = !filters.dateFrom && !filters.dateTo;
+
+  return (
+    <div className="pb-28">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <p className="text-lg font-bold">Dashboard</p>
+          <p className="text-xs text-ink/40">{session.store}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2.5 mb-6">
+        <StatCard num={stats.pendingToday} label="今日待處理" />
+        <StatCard num={stats.buyToday} label="待採購" />
+        <StatCard num={stats.doneToday} label="今日完成" />
+      </div>
+
+      {completedToast && (
+        <div className="mb-4 bg-[#4E5747]/10 border border-[#4E5747]/30 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+          <p className="text-sm font-medium text-[#4E5747]">✓ 訂單已完成，可至歷史紀錄查看</p>
+          <button onClick={() => setCompletedToast(false)} className="text-xs text-[#4E5747]/60 underline shrink-0">關閉</button>
+        </div>
+      )}
+
+      <ManageTabBar tab={tab} onChange={switchTab} />
+
+      {tab === 'history' && (
+        <Card className="p-3 mb-4 flex flex-wrap gap-2 items-center">
+          <input type="text" value={filters.search} onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
+            placeholder="搜尋單號或商品名稱" className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white flex-1 min-w-[160px]" />
+          <div className="flex items-center gap-2">
+            <input type="date" value={filters.dateFrom} onChange={e => setFilters(f => ({ ...f, dateFrom: e.target.value }))}
+              className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
+            <span className="text-ink/30 text-sm">至</span>
+            <input type="date" value={filters.dateTo} onChange={e => setFilters(f => ({ ...f, dateTo: e.target.value }))}
+              className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
+            <button onClick={showAllTime}
+              className={cls('text-sm px-3 py-2 rounded-lg border whitespace-nowrap',
+                isAllTime ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/60')}>
+              全部期間
+            </button>
+          </div>
+          <p className="text-xs text-ink/30 w-full">
+            {isAllTime ? '目前顯示全部期間' : `顯示 ${filters.dateFrom || '最早'} ～ ${filters.dateTo || '最新'}`}
+          </p>
+        </Card>
+      )}
+
+      <p className="text-sm font-medium text-ink/60 mb-2">{tab === 'active' ? '處理中的採購' : '歷史紀錄'}</p>
+      {loading ? <Spinner /> : rows.length === 0 ? (
+        <div className="text-center py-16">
+          <p className="text-sm text-ink/40 mb-3">{tab === 'history' ? '此範圍內無訂單' : '目前沒有處理中的採購'}</p>
+          {tab === 'history' && (filters.search || filters.dateFrom || filters.dateTo) && (
+            <button onClick={clearFilters} className="text-sm text-brick underline">清除篩選</button>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {rows.map(r => (
+            <Card key={r.id} onClick={() => setExpandedId(id => id === r.id ? null : r.id)}
+              className="px-4 py-3 cursor-pointer hover:border-ink/20">
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <p className="font-mono text-sm font-semibold truncate">{r.request_no}</p>
+                  <p className="text-xs text-ink/40 mt-0.5">{fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {flaggedIds.has(r.id) && (
+                    <span className="text-xs font-bold px-2 py-1 rounded-full bg-brick text-white">⚠ 缺貨未採購</span>
+                  )}
+                  <StatusPill status={r.status} hasStockIssue={r.has_stock_issue} />
+                </div>
+              </div>
+              {expandedId === r.id && <RequestItemsInline request={r} onAcked={loadFlags} onCompleted={handleCompleted} />}
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {tab === 'history' && hasMore && (
+        <div className="flex justify-center mt-4">
+          <Button variant="ghost" disabled={loadingMore} onClick={loadMore}>
+            {loadingMore ? '載入中…' : '載入更多'}
+          </Button>
+        </div>
+      )}
+
+      <div className="fixed bottom-[calc(4rem+10px+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent md:safe-bottom">
+        <Button variant="brick" className="w-full max-w-md mx-auto flex" onClick={() => onNavigate('new')}>
+          快速新增採購
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
+  if (session.role === 'staff') return <StaffDashboard session={session} onNavigate={onNavigate} />;
+  return <AdminDashboard session={session} onNavigate={onNavigate} onOpenRequest={onOpenRequest} onOpenFiltered={onOpenFiltered} />;
+}
+
+function AdminDashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
+  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState([]);
+  const [storeFilter, setStoreFilter] = useState('all');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    let q = sb.from('purchase_requests').select('*').order('created_at', { ascending: false }).limit(50);
+    if (storeFilter !== 'all') q = q.eq('store', storeFilter);
+    const { data, error } = await q;
+    setRows(error ? [] : data);
+    setLoading(false);
+  }, [storeFilter]);
+
+  useEffect(() => { load(); }, [load]);
   useEffect(() => {
     const ch = sb.channel('dashboard-requests')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requests' }, load)
       .subscribe();
     return () => { sb.removeChannel(ch); };
   }, [load]);
-  useEffect(() => {
-    if (!isStaff) return;
-    const ch = sb.channel('dashboard-stock-issues')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_items' }, loadFlags)
-      .subscribe();
-    return () => { sb.removeChannel(ch); };
-  }, [isStaff, loadFlags]);
 
   const today = taipeiDateStr();
   const stats = useMemo(() => {
@@ -915,56 +1114,40 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
       <div className="flex items-center justify-between mb-4">
         <div>
           <p className="text-lg font-bold">Dashboard</p>
-          <p className="text-xs text-ink/40">{canViewAll ? '全部門市 · ' + session.name : session.store}</p>
+          <p className="text-xs text-ink/40">全部門市 · {session.name}</p>
         </div>
-        {canViewAll && (
-          <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
-            className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
-            <option value="all">全部門市</option>
-            {STORES.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-        )}
+        <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
+          className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
+          <option value="all">全部門市</option>
+          {STORES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
       </div>
 
       <div className="grid grid-cols-3 gap-2.5 mb-6">
         <StatCard num={stats.pendingToday} label="今日待處理"
-          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'all', dateFrom: today, dateTo: today, search: '' }) : undefined} />
+          onClick={() => onOpenFiltered({ store: storeFilter, status: 'all', dateFrom: today, dateTo: today, search: '' })} />
         <StatCard num={stats.buyToday} label="待採購"
-          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'pending', dateFrom: '', dateTo: '', search: '' }) : undefined} />
+          onClick={() => onOpenFiltered({ store: storeFilter, status: 'pending', dateFrom: '', dateTo: '', search: '' })} />
         <StatCard num={stats.doneToday} label="今日完成"
-          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'done', dateFrom: '', dateTo: '', search: '' }) : undefined} />
+          onClick={() => onOpenFiltered({ store: storeFilter, status: 'done', dateFrom: '', dateTo: '', search: '' })} />
       </div>
 
       <p className="text-sm font-medium text-ink/60 mb-2">最近送出的採購</p>
       {loading ? <Spinner /> : (
         <div className="flex flex-col gap-2">
           {rows.slice(0, 12).map(r => (
-            <Card key={r.id} onClick={() => (canViewAll ? onOpenRequest(r.id) : setExpandedId(id => id === r.id ? null : r.id))}
+            <Card key={r.id} onClick={() => onOpenRequest(r.id)}
               className="px-4 py-3 cursor-pointer hover:border-ink/20">
               <div className="flex items-center justify-between">
                 <div className="min-w-0">
                   <p className="font-mono text-sm font-semibold truncate">{r.request_no}</p>
-                  <p className="text-xs text-ink/40 mt-0.5">{canViewAll ? r.store + ' · ' : ''}{fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
+                  <p className="text-xs text-ink/40 mt-0.5">{r.store} · {fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
                 </div>
-                <div className="flex items-center gap-2">
-                  {isStaff && flaggedIds.has(r.id) && (
-                    <span className="text-xs font-bold px-2 py-1 rounded-full bg-brick text-white">⚠ 缺貨未採購</span>
-                  )}
-                  <StatusPill status={r.status} hasStockIssue={r.has_stock_issue} />
-                </div>
+                <StatusPill status={r.status} hasStockIssue={r.has_stock_issue} />
               </div>
-              {isStaff && expandedId === r.id && <RequestItemsInline request={r} onAcked={loadFlags} />}
             </Card>
           ))}
           {rows.length === 0 && <p className="text-sm text-ink/40 text-center py-10">目前沒有採購紀錄</p>}
-        </div>
-      )}
-
-      {isStaff && (
-        <div className="fixed bottom-[calc(4rem+10px+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-cream via-cream to-transparent md:safe-bottom">
-          <Button variant="brick" className="w-full max-w-md mx-auto flex" onClick={() => onNavigate('new')}>
-            快速新增採購
-          </Button>
         </div>
       )}
     </div>
