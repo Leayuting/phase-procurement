@@ -1076,38 +1076,94 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
 }
 
 function AdminDashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
-  const [loading, setLoading] = useState(true);
-  const [rows, setRows] = useState([]);
+  const [tab, setTab] = useState('active');
   const [storeFilter, setStoreFilter] = useState('all');
+  const [filters, setFilters] = useState({ dateFrom: '', dateTo: '', search: '' });
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [statsRows, setStatsRows] = useState([]);
+
+  function switchTab(next) {
+    setTab(next);
+    if (next === 'history' && !filters.dateFrom && !filters.dateTo) {
+      setFilters(f => ({ ...f, dateFrom: daysAgoStr(29), dateTo: taipeiDateStr() }));
+    }
+  }
+  function showAllTime() { setFilters(f => ({ ...f, dateFrom: '', dateTo: '' })); }
+  function clearFilters() { setFilters({ dateFrom: '', dateTo: '', search: '' }); }
+
+  const buildQuery = useCallback((matchIds) => {
+    let q = sb.from('purchase_requests').select('*', { count: 'exact' }).order('created_at', { ascending: false });
+    q = tab === 'history' ? q.in('status', HISTORY_SUB_STATUSES) : q.not('status', 'in', '(done,cancelled)');
+    if (storeFilter !== 'all') q = q.eq('store', storeFilter);
+    if (filters.dateFrom) q = q.gte('created_at', taipeiDayToUtc(filters.dateFrom, false));
+    if (filters.dateTo) q = q.lte('created_at', taipeiDayToUtc(filters.dateTo, true));
+    if (matchIds) q = q.in('id', matchIds);
+    return q;
+  }, [tab, storeFilter, filters]);
+
+  async function findMatchIds() {
+    const term = filters.search.trim();
+    if (!term) return null;
+    const [{ data: itemRows }, { data: reqRows }] = await Promise.all([
+      sb.from('purchase_items').select('request_id').ilike('product_name', `%${term}%`),
+      sb.from('purchase_requests').select('id').ilike('request_no', `%${term}%`)
+    ]);
+    return Array.from(new Set([...(itemRows || []).map(r => r.request_id), ...(reqRows || []).map(r => r.id)]));
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
-    let q = sb.from('purchase_requests').select('*').order('created_at', { ascending: false }).limit(50);
-    if (storeFilter !== 'all') q = q.eq('store', storeFilter);
-    const { data, error } = await q;
-    setRows(error ? [] : data);
+    const matchIds = await findMatchIds();
+    if (matchIds && matchIds.length === 0) { setRows([]); setHasMore(false); setLoading(false); return; }
+    const pageSize = tab === 'history' ? MANAGE_PAGE_SIZE : 300;
+    const { data, error, count } = await buildQuery(matchIds).range(0, pageSize - 1);
+    setRows(error ? [] : (data || []));
+    setHasMore(!error && tab === 'history' && (count || 0) > pageSize);
     setLoading(false);
+  }, [filters, tab, buildQuery]);
+
+  async function loadMore() {
+    setLoadingMore(true);
+    const matchIds = await findMatchIds();
+    const from = rows.length;
+    const { data, error, count } = await buildQuery(matchIds).range(from, from + MANAGE_PAGE_SIZE - 1);
+    if (!error) {
+      setRows(prev => [...prev, ...(data || [])]);
+      setHasMore((count || 0) > from + (data || []).length);
+    }
+    setLoadingMore(false);
+  }
+
+  // 統計卡片獨立查詢，不受分頁分頁/篩選影響
+  const loadStats = useCallback(async () => {
+    let q = sb.from('purchase_requests').select('status,created_at,updated_at').order('created_at', { ascending: false }).limit(50);
+    if (storeFilter !== 'all') q = q.eq('store', storeFilter);
+    const { data } = await q;
+    setStatsRows(data || []);
   }, [storeFilter]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadStats(); }, [loadStats]);
   useEffect(() => {
     const ch = sb.channel('dashboard-requests')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requests' }, load)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requests' }, () => { load(); loadStats(); })
       .subscribe();
     return () => { sb.removeChannel(ch); };
-  }, [load]);
+  }, [load, loadStats]);
 
   const today = taipeiDateStr();
   const stats = useMemo(() => {
-    const createdToday = rows.filter(r => taipeiDateStr(new Date(r.created_at)) === today);
+    const createdToday = statsRows.filter(r => taipeiDateStr(new Date(r.created_at)) === today);
     const pendingToday = createdToday.filter(r => !isClosedStatus(r.status)).length;
-    // 待採購是目前的待處理總量（不限今天送單的），不然舊單卡在待採購狀態時完全不會被算進去
-    const buyToday = rows.filter(r => r.status === 'pending').length;
-    // 已完成用「完成當下」的日期（updated_at）算，不是用送單日期——訂單可能不是今天送的，
-    // 但今天才被門市驗收完成，這種情況也要算進「今日完成」
-    const doneToday = rows.filter(r => r.status === 'done' && taipeiDateStr(new Date(r.updated_at)) === today).length;
+    const buyToday = statsRows.filter(r => r.status === 'pending').length;
+    const doneToday = statsRows.filter(r => r.status === 'done' && taipeiDateStr(new Date(r.updated_at)) === today).length;
     return { pendingToday, buyToday, doneToday };
-  }, [rows, today]);
+  }, [statsRows, today]);
+
+  const isAllTime = !filters.dateFrom && !filters.dateTo;
 
   return (
     <div className="pb-28">
@@ -1132,10 +1188,41 @@ function AdminDashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) 
           onClick={() => onOpenFiltered({ store: storeFilter, status: 'done', dateFrom: '', dateTo: '', search: '' })} />
       </div>
 
-      <p className="text-sm font-medium text-ink/60 mb-2">最近送出的採購</p>
-      {loading ? <Spinner /> : (
+      <ManageTabBar tab={tab} onChange={switchTab} />
+
+      {tab === 'history' && (
+        <Card className="p-3 mb-4 flex flex-wrap gap-2 items-center">
+          <input type="text" value={filters.search} onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
+            placeholder="搜尋單號或商品名稱" className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white flex-1 min-w-[160px]" />
+          <div className="flex items-center gap-2">
+            <input type="date" value={filters.dateFrom} onChange={e => setFilters(f => ({ ...f, dateFrom: e.target.value }))}
+              className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
+            <span className="text-ink/30 text-sm">至</span>
+            <input type="date" value={filters.dateTo} onChange={e => setFilters(f => ({ ...f, dateTo: e.target.value }))}
+              className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
+            <button onClick={showAllTime}
+              className={cls('text-sm px-3 py-2 rounded-lg border whitespace-nowrap',
+                isAllTime ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/60')}>
+              全部期間
+            </button>
+          </div>
+          <p className="text-xs text-ink/30 w-full">
+            {isAllTime ? '目前顯示全部期間' : `顯示 ${filters.dateFrom || '最早'} ～ ${filters.dateTo || '最新'}`}
+          </p>
+        </Card>
+      )}
+
+      <p className="text-sm font-medium text-ink/60 mb-2">{tab === 'active' ? '處理中的採購' : '歷史紀錄'}</p>
+      {loading ? <Spinner /> : rows.length === 0 ? (
+        <div className="text-center py-16">
+          <p className="text-sm text-ink/40 mb-3">{tab === 'history' ? '此範圍內無訂單' : '目前沒有處理中的採購'}</p>
+          {tab === 'history' && (filters.search || filters.dateFrom || filters.dateTo) && (
+            <button onClick={clearFilters} className="text-sm text-brick underline">清除篩選</button>
+          )}
+        </div>
+      ) : (
         <div className="flex flex-col gap-2">
-          {rows.slice(0, 12).map(r => (
+          {rows.map(r => (
             <Card key={r.id} onClick={() => onOpenRequest(r.id)}
               className="px-4 py-3 cursor-pointer hover:border-ink/20">
               <div className="flex items-center justify-between">
@@ -1147,7 +1234,14 @@ function AdminDashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) 
               </div>
             </Card>
           ))}
-          {rows.length === 0 && <p className="text-sm text-ink/40 text-center py-10">目前沒有採購紀錄</p>}
+        </div>
+      )}
+
+      {tab === 'history' && hasMore && (
+        <div className="flex justify-center mt-4">
+          <Button variant="ghost" disabled={loadingMore} onClick={loadMore}>
+            {loadingMore ? '載入中…' : '載入更多'}
+          </Button>
         </div>
       )}
     </div>
