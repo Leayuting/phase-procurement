@@ -82,6 +82,13 @@ const ITEM_STATUS_META = {
   cancelled:    { label: '已取消',   color: '#8C8378' }
 };
 const ITEM_STATUS_OPTIONS = ['pending', 'ordering', 'arrived', 'partial', 'stock_issue', 'cancelled'];
+// 集中管理「整張採購單是否已結案」的判斷，全站唯一依據——目前系統的結案狀態只有這兩種
+// （由 recalc_request_status trigger 保證：全部商品到貨才會是 done，全部取消才會是 cancelled），
+// 其餘狀態（含未來新增、目前辨識不到的值）一律視為未結案，避免訂單被誤藏
+const CLOSED_STATUSES = ['done', 'cancelled'];
+function isClosedStatus(status) { return CLOSED_STATUSES.includes(status); }
+const ACTIVE_SUB_STATUSES = ['pending', 'ordering', 'partial', 'stock_issue'];
+const HISTORY_SUB_STATUSES = ['done', 'cancelled'];
 
 /* ================= 小工具 ================= */
 async function sha256Hex(text) {
@@ -894,7 +901,7 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
   const today = taipeiDateStr();
   const stats = useMemo(() => {
     const createdToday = rows.filter(r => taipeiDateStr(new Date(r.created_at)) === today);
-    const pendingToday = createdToday.filter(r => r.status !== 'done' && r.status !== 'cancelled').length;
+    const pendingToday = createdToday.filter(r => !isClosedStatus(r.status)).length;
     // 待採購是目前的待處理總量（不限今天送單的），不然舊單卡在待採購狀態時完全不會被算進去
     const buyToday = rows.filter(r => r.status === 'pending').length;
     // 已完成用「完成當下」的日期（updated_at）算，不是用送單日期——訂單可能不是今天送的，
@@ -921,11 +928,11 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
 
       <div className="grid grid-cols-3 gap-2.5 mb-6">
         <StatCard num={stats.pendingToday} label="今日待處理"
-          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'all', dateFrom: today, dateTo: today, productSearch: '' }) : undefined} />
+          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'all', dateFrom: today, dateTo: today, search: '' }) : undefined} />
         <StatCard num={stats.buyToday} label="待採購"
-          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'pending', dateFrom: '', dateTo: '', productSearch: '' }) : undefined} />
+          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'pending', dateFrom: '', dateTo: '', search: '' }) : undefined} />
         <StatCard num={stats.doneToday} label="今日完成"
-          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'done', dateFrom: '', dateTo: '', productSearch: '' }) : undefined} />
+          onClick={canViewAll ? () => onOpenFiltered({ store: storeFilter, status: 'done', dateFrom: '', dateTo: '', search: '' }) : undefined} />
       </div>
 
       <p className="text-sm font-medium text-ink/60 mb-2">最近送出的採購</p>
@@ -1321,8 +1328,25 @@ function NewRequest({ session, onNavigate }) {
 /* ================= 採購管理（管理者） ================= */
 const STATUS_ORDER = ['pending', 'ordering', 'stock_issue', 'partial', 'done', 'cancelled'];
 
-function ManageFilterBar({ filters, onChange }) {
+function ManageTabBar({ tab, onChange }) {
+  return (
+    <div className="flex gap-2 mb-3">
+      <button onClick={() => onChange('active')}
+        className={cls('px-4 py-2 rounded-lg text-sm font-medium', tab === 'active' ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
+        處理中
+      </button>
+      <button onClick={() => onChange('history')}
+        className={cls('px-4 py-2 rounded-lg text-sm font-medium', tab === 'history' ? 'bg-ink text-cream' : 'bg-black/5 text-ink/60')}>
+        歷史紀錄
+      </button>
+    </div>
+  );
+}
+
+function ManageFilterBar({ tab, filters, onChange, onShowAll }) {
   function set(patch) { onChange({ ...filters, ...patch }); }
+  const subStatuses = tab === 'history' ? HISTORY_SUB_STATUSES : ACTIVE_SUB_STATUSES;
+  const isAllTime = !filters.dateFrom && !filters.dateTo;
   return (
     <Card className="p-3 mb-4 flex flex-wrap gap-2 items-center">
       <select value={filters.store} onChange={e => set({ store: e.target.value })}
@@ -1333,15 +1357,27 @@ function ManageFilterBar({ filters, onChange }) {
       <select value={filters.status} onChange={e => set({ status: e.target.value })}
         className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
         <option value="all">全部狀態</option>
-        {STATUS_ORDER.map(s => <option key={s} value={s}>{STATUS_META[s].label}</option>)}
+        {subStatuses.map(s => <option key={s} value={s}>{STATUS_META[s].label}</option>)}
       </select>
-      <input type="date" value={filters.dateFrom} onChange={e => set({ dateFrom: e.target.value })}
-        className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
-      <span className="text-ink/30 text-sm">至</span>
-      <input type="date" value={filters.dateTo} onChange={e => set({ dateTo: e.target.value })}
-        className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
-      <input type="text" value={filters.productSearch} onChange={e => set({ productSearch: e.target.value })}
-        placeholder="搜尋商品名稱" className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white flex-1 min-w-[140px]" />
+      <input type="text" value={filters.search} onChange={e => set({ search: e.target.value })}
+        placeholder="搜尋單號或商品名稱" className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white flex-1 min-w-[160px]" />
+      <div className="flex items-center gap-2">
+        <input type="date" value={filters.dateFrom} onChange={e => set({ dateFrom: e.target.value })}
+          className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
+        <span className="text-ink/30 text-sm">至</span>
+        <input type="date" value={filters.dateTo} onChange={e => set({ dateTo: e.target.value })}
+          className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
+        <button onClick={onShowAll}
+          className={cls('text-sm px-3 py-2 rounded-lg border whitespace-nowrap',
+            isAllTime ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/60')}>
+          全部期間
+        </button>
+      </div>
+      {tab === 'history' && (
+        <p className="text-xs text-ink/30 w-full">
+          {isAllTime ? '目前顯示全部期間' : `顯示 ${filters.dateFrom || '最早'} ～ ${filters.dateTo || '最新'}`}
+        </p>
+      )}
     </Card>
   );
 }
@@ -1349,6 +1385,9 @@ function ManageFilterBar({ filters, onChange }) {
 function taipeiDayToUtc(dateStr, endOfDay) {
   const base = Date.parse(dateStr + 'T00:00:00Z') - 8 * 3600 * 1000;
   return new Date(base + (endOfDay ? 24 * 3600 * 1000 - 1 : 0)).toISOString();
+}
+function daysAgoStr(n) {
+  return taipeiDateStr(new Date(taipeiNow().getTime() - n * 24 * 3600 * 1000));
 }
 
 function taipeiMonthRange() {
@@ -1412,13 +1451,30 @@ function MonthlySummary({ store, onBack }) {
   );
 }
 
+const MANAGE_PAGE_SIZE = 30;
+
 function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
-  const [filters, setFilters] = useState(() => ({ store: 'all', status: 'all', dateFrom: '', dateTo: '', productSearch: '', ...initialFilters }));
+  const [tab, setTab] = useState(() => (initialFilters && isClosedStatus(initialFilters.status)) ? 'history' : 'active');
+  const [filters, setFilters] = useState(() => ({ store: 'all', status: 'all', dateFrom: '', dateTo: '', search: '', ...initialFilters }));
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [usersMap, setUsersMap] = useState({});
   const [selectedId, setSelectedId] = useState(initialRequestId || null);
   const [showSummary, setShowSummary] = useState(false);
+
+  function switchTab(next) {
+    setTab(next);
+    // 只有使用者主動點分頁時才套用「歷史紀錄預設近30天」，透過 Dashboard 統計卡片點進來的
+    // 明確篩選（即使日期是空字串）視為刻意選擇「全部期間」，不要覆蓋掉
+    if (next === 'history' && !filters.dateFrom && !filters.dateTo) {
+      setFilters(f => ({ ...f, dateFrom: daysAgoStr(29), dateTo: taipeiDateStr() }));
+    }
+    if (filters.status !== 'all') setFilters(f => ({ ...f, status: 'all' }));
+  }
+  function showAllTime() { setFilters(f => ({ ...f, dateFrom: '', dateTo: '' })); }
+  function clearFilters() { setFilters({ store: 'all', status: 'all', dateFrom: '', dateTo: '', search: '' }); }
 
   useEffect(() => {
     sb.from('users').select('id,name').then(({ data }) => {
@@ -1428,25 +1484,49 @@ function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
     });
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    let matchIds = null;
-    if (filters.productSearch.trim()) {
-      const { data: itemRows } = await sb.from('purchase_items').select('request_id')
-        .ilike('product_name', `%${filters.productSearch.trim()}%`);
-      matchIds = Array.from(new Set((itemRows || []).map(r => r.request_id)));
-      if (matchIds.length === 0) { setRows([]); setLoading(false); return; }
-    }
-    let q = sb.from('purchase_requests').select('*, purchase_items(count)').order('created_at', { ascending: false });
-    if (filters.store !== 'all') q = q.eq('store', filters.store);
+  const buildQuery = useCallback((matchIds) => {
+    let q = sb.from('purchase_requests').select('*, purchase_items(count)', { count: 'exact' }).order('created_at', { ascending: false });
+    q = tab === 'history' ? q.in('status', HISTORY_SUB_STATUSES) : q.not('status', 'in', '(done,cancelled)');
     if (filters.status !== 'all') q = q.eq('status', filters.status);
+    if (filters.store !== 'all') q = q.eq('store', filters.store);
     if (filters.dateFrom) q = q.gte('created_at', taipeiDayToUtc(filters.dateFrom, false));
     if (filters.dateTo) q = q.lte('created_at', taipeiDayToUtc(filters.dateTo, true));
     if (matchIds) q = q.in('id', matchIds);
-    const { data, error } = await q.limit(300);
-    setRows(error ? [] : data);
+    return q;
+  }, [tab, filters]);
+
+  async function findMatchIds() {
+    const term = filters.search.trim();
+    if (!term) return null;
+    const [{ data: itemRows }, { data: reqRows }] = await Promise.all([
+      sb.from('purchase_items').select('request_id').ilike('product_name', `%${term}%`),
+      sb.from('purchase_requests').select('id').ilike('request_no', `%${term}%`)
+    ]);
+    return Array.from(new Set([...(itemRows || []).map(r => r.request_id), ...(reqRows || []).map(r => r.id)]));
+  }
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const matchIds = await findMatchIds();
+    if (matchIds && matchIds.length === 0) { setRows([]); setHasMore(false); setLoading(false); return; }
+    const pageSize = tab === 'history' ? MANAGE_PAGE_SIZE : 300;
+    const { data, error, count } = await buildQuery(matchIds).range(0, pageSize - 1);
+    setRows(error ? [] : (data || []));
+    setHasMore(!error && tab === 'history' && (count || 0) > pageSize);
     setLoading(false);
-  }, [filters]);
+  }, [filters, tab, buildQuery]);
+
+  async function loadMore() {
+    setLoadingMore(true);
+    const matchIds = await findMatchIds();
+    const from = rows.length;
+    const { data, error, count } = await buildQuery(matchIds).range(from, from + MANAGE_PAGE_SIZE - 1);
+    if (!error) {
+      setRows(prev => [...prev, ...(data || [])]);
+      setHasMore((count || 0) > from + (data || []).length);
+    }
+    setLoadingMore(false);
+  }
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
@@ -1509,10 +1589,14 @@ function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
           </div>
         )}
       </div>
-      <ManageFilterBar filters={filters} onChange={setFilters} />
+      <ManageTabBar tab={tab} onChange={switchTab} />
+      <ManageFilterBar tab={tab} filters={filters} onChange={setFilters} onShowAll={showAllTime} />
 
       {loading ? <Spinner /> : rows.length === 0 ? (
-        <p className="text-sm text-ink/40 text-center py-16">沒有符合條件的採購單</p>
+        <div className="text-center py-16">
+          <p className="text-sm text-ink/40 mb-3">此範圍內無訂單</p>
+          <button onClick={clearFilters} className="text-sm text-brick underline">清除篩選</button>
+        </div>
       ) : (
         <React.Fragment>
           {/* 桌機 Table */}
@@ -1567,6 +1651,14 @@ function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
               </Card>
             ))}
           </div>
+
+          {tab === 'history' && hasMore && (
+            <div className="flex justify-center mt-4">
+              <Button variant="ghost" disabled={loadingMore} onClick={loadMore}>
+                {loadingMore ? '載入中…' : '載入更多'}
+              </Button>
+            </div>
+          )}
         </React.Fragment>
       )}
     </div>
@@ -1590,6 +1682,8 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
   const [partialPromptId, setPartialPromptId] = useState(null);
   const [partialQtyDraft, setPartialQtyDraft] = useState('');
   const [partialErr, setPartialErr] = useState('');
+  const [showCompletedToast, setShowCompletedToast] = useState(false);
+  const prevStatusRef = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1611,6 +1705,14 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
   }, [requestId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!req) return;
+    if (prevStatusRef.current && prevStatusRef.current !== 'done' && req.status === 'done') {
+      setShowCompletedToast(true);
+    }
+    prevStatusRef.current = req.status;
+  }, [req && req.status]);
 
   async function confirmCancel() {
     if (!cancelReason.trim()) { setCancelErr('請填寫取消原因'); return; }
@@ -1691,6 +1793,13 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
   return (
     <div className="pb-10">
       <button onClick={onBack} className="text-sm text-ink/50 underline mb-4">← 返回列表</button>
+
+      {showCompletedToast && (
+        <div className="mb-4 bg-[#4E5747]/10 border border-[#4E5747]/30 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+          <p className="text-sm font-medium text-[#4E5747]">✓ 訂單已完成，可至歷史紀錄查看</p>
+          <button onClick={() => setShowCompletedToast(false)} className="text-xs text-[#4E5747]/60 underline shrink-0">關閉</button>
+        </div>
+      )}
 
       <div className="flex items-center justify-between mb-1">
         <p className="text-xl font-black font-mono">{req.request_no}</p>
