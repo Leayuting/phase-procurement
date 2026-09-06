@@ -63,21 +63,23 @@ const SCREEN_KEY = 'phase_procurement_screen';
 
 // 整單狀態：唯讀，由資料庫 trigger（recalc_request_status）依商品狀態自動算出，前端不寫入
 const STATUS_META = {
-  pending:   { label: '待採購',   color: '#A9754A' },
-  ordering:  { label: '採購中',   color: '#5E6770' },
-  partial:   { label: '部分到貨', color: '#4A6FA5' },
-  done:      { label: '完成',     color: '#4E5747' },
-  cancelled: { label: '取消',     color: '#8C8378' }
+  pending:      { label: '待採購',   color: '#A9754A' },
+  ordering:     { label: '採購中',   color: '#5E6770' },
+  partial:      { label: '部分到貨', color: '#4A6FA5' },
+  stock_issue:  { label: '缺貨待補', color: '#D4870A' },
+  done:         { label: '完成',     color: '#4E5747' },
+  cancelled:    { label: '取消',     color: '#8C8378' }
 };
-// 單項商品狀態：待採購/採購中/缺貨未採購/取消由採購或管理者手動設定；
+const PARTIAL_STOCK_ISSUE_COLOR = '#D4870A';
+// 單項商品狀態：待採購/採購中/缺貨待補/取消由採購或管理者手動設定；
 // 已到貨/部分到貨只能透過門市簽名驗收流程設定（見 AcceptanceModal）
 const ITEM_STATUS_META = {
-  pending:      { label: '待採購',     color: '#A9754A' },
-  ordering:     { label: '採購中',     color: '#5E6770' },
-  arrived:      { label: '已到貨',     color: '#4E5747' },
-  partial:      { label: '部分到貨',   color: '#4A6FA5' },
-  stock_issue:  { label: '缺貨／未採購', color: '#B5402A' },
-  cancelled:    { label: '已取消',     color: '#8C8378' }
+  pending:      { label: '待採購',   color: '#A9754A' },
+  ordering:     { label: '採購中',   color: '#5E6770' },
+  arrived:      { label: '已到貨',   color: '#4E5747' },
+  partial:      { label: '部分到貨', color: '#4A6FA5' },
+  stock_issue:  { label: '缺貨待補', color: '#D4870A' },
+  cancelled:    { label: '已取消',   color: '#8C8378' }
 };
 const ITEM_STATUS_OPTIONS = ['pending', 'ordering', 'arrived', 'partial', 'stock_issue', 'cancelled'];
 
@@ -339,11 +341,18 @@ function StatCard({ num, label, onClick }) {
     </Card>
   );
 }
-function StatusPill({ status }) {
+function StatusPill({ status, hasStockIssue }) {
   const meta = STATUS_META[status] || { label: status, color: '#999' };
   return (
-    <span className="text-xs font-bold px-2.5 py-1 rounded-full text-white" style={{ background: meta.color }}>
-      {meta.label}
+    <span className="inline-flex items-center gap-1.5">
+      <span className="text-xs font-bold px-2.5 py-1 rounded-full text-white" style={{ background: meta.color }}>
+        {meta.label}
+      </span>
+      {hasStockIssue && status !== 'stock_issue' && status !== 'done' && status !== 'cancelled' && (
+        <span className="text-xs font-bold px-2.5 py-1 rounded-full text-white" style={{ background: PARTIAL_STOCK_ISSUE_COLOR }}>
+          部分缺貨
+        </span>
+      )}
     </span>
   );
 }
@@ -694,9 +703,18 @@ function RequestItemsInline({ request, onAcked }) {
   useEffect(() => { load(); }, [load]);
 
   const effectiveStatus = request.status;
+  const [ackingItemId, setAckingItemId] = useState(null);
+  const [ackName, setAckName] = useState('');
+  const [ackErr, setAckErr] = useState('');
 
-  async function ackStockIssue(itemId) {
-    await sb.from('purchase_items').update({ stock_issue_acked_at: new Date().toISOString() }).eq('id', itemId);
+  async function confirmAckStockIssue(itemId) {
+    if (!ackName.trim()) { setAckErr('請填寫確認人姓名'); return; }
+    await sb.from('purchase_items').update({
+      stock_issue_acked_at: new Date().toISOString(), stock_issue_acked_by: ackName.trim()
+    }).eq('id', itemId);
+    setAckingItemId(null);
+    setAckName('');
+    setAckErr('');
     load();
     if (onAcked) onAcked();
   }
@@ -757,14 +775,29 @@ function RequestItemsInline({ request, onAcked }) {
               )}
               {it.item_status === 'stock_issue' && (
                 it.stock_issue_acked_at ? (
-                  <p className="text-xs text-ink/30 mt-1">已知悉：缺貨/未採購</p>
+                  <p className="text-xs text-ink/30 mt-1">
+                    門店已知悉 ✓{it.stock_issue_acked_by ? '（' + it.stock_issue_acked_by + '）' : ''}
+                  </p>
                 ) : (
-                  <div className="mt-1.5 bg-brick/10 border border-brick/30 rounded-lg px-3 py-2">
-                    <p className="text-xs font-bold text-brick mb-1.5">⚠ 缺貨未採購</p>
-                    <button onClick={() => ackStockIssue(it.id)}
-                      className="text-xs font-bold px-3 py-1.5 rounded-lg bg-brick text-white">
-                      已知悉
-                    </button>
+                  <div className="mt-1.5 rounded-lg px-3 py-2" style={{ background: PARTIAL_STOCK_ISSUE_COLOR + '1A', border: `1px solid ${PARTIAL_STOCK_ISSUE_COLOR}4D` }}>
+                    <p className="text-xs font-bold mb-1.5" style={{ color: PARTIAL_STOCK_ISSUE_COLOR }}>⚠ 缺貨待補</p>
+                    {ackingItemId === it.id ? (
+                      <div className="flex items-center gap-2">
+                        <input value={ackName} onChange={e => setAckName(e.target.value)} placeholder="確認人姓名" autoFocus
+                          className="flex-1 text-sm px-3 py-1.5 rounded-lg border border-ink/15" />
+                        <button onClick={() => confirmAckStockIssue(it.id)}
+                          className="text-xs font-bold px-3 py-1.5 rounded-lg text-white whitespace-nowrap" style={{ background: PARTIAL_STOCK_ISSUE_COLOR }}>
+                          確認
+                        </button>
+                        <button onClick={() => { setAckingItemId(null); setAckErr(''); }} className="text-xs text-ink/30 underline whitespace-nowrap">取消</button>
+                      </div>
+                    ) : (
+                      <button onClick={() => { setAckingItemId(it.id); setAckName(''); setAckErr(''); }}
+                        className="text-xs font-bold px-3 py-1.5 rounded-lg text-white" style={{ background: PARTIAL_STOCK_ISSUE_COLOR }}>
+                        門店已知悉
+                      </button>
+                    )}
+                    {ackingItemId === it.id && ackErr && <p className="text-xs mt-1" style={{ color: PARTIAL_STOCK_ISSUE_COLOR }}>{ackErr}</p>}
                   </div>
                 )
               )}
@@ -793,7 +826,7 @@ function RequestItemsInline({ request, onAcked }) {
             </div>
           )}
 
-          {!actionDone && (effectiveStatus === 'ordering' || effectiveStatus === 'partial') && eligibleForAccept.length > 0 && (
+          {!actionDone && ['ordering', 'partial', 'stock_issue'].includes(effectiveStatus) && eligibleForAccept.length > 0 && (
             <div className="pt-1 border-t border-black/5 mt-1">
               <Button variant="brick" className="w-full" onClick={() => setShowAccept(true)}>驗收</Button>
             </div>
@@ -910,7 +943,7 @@ function Dashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) {
                   {isStaff && flaggedIds.has(r.id) && (
                     <span className="text-xs font-bold px-2 py-1 rounded-full bg-brick text-white">⚠ 缺貨未採購</span>
                   )}
-                  <StatusPill status={r.status} />
+                  <StatusPill status={r.status} hasStockIssue={r.has_stock_issue} />
                 </div>
               </div>
               {isStaff && expandedId === r.id && <RequestItemsInline request={r} onAcked={loadFlags} />}
@@ -1089,7 +1122,7 @@ function NewRequest({ session, onNavigate }) {
       .select('quantity, request_id, purchase_requests!inner(request_no, applicant_name, created_at, status, store)')
       .eq('product_name', productName)
       .eq('purchase_requests.store', session.store)
-      .in('purchase_requests.status', ['pending', 'ordering', 'partial']);
+      .in('purchase_requests.status', ['pending', 'ordering', 'partial', 'stock_issue']);
     return data || [];
   }
 
@@ -1286,7 +1319,7 @@ function NewRequest({ session, onNavigate }) {
 }
 
 /* ================= 採購管理（管理者） ================= */
-const STATUS_ORDER = ['pending', 'ordering', 'partial', 'done', 'cancelled'];
+const STATUS_ORDER = ['pending', 'ordering', 'stock_issue', 'partial', 'done', 'cancelled'];
 
 function ManageFilterBar({ filters, onChange }) {
   function set(patch) { onChange({ ...filters, ...patch }); }
@@ -1508,7 +1541,7 @@ function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
                     <td className="px-4 py-3">{r.applicant_name || '—'}</td>
                     <td className="px-4 py-3">{r.purchase_items?.[0]?.count ?? 0}</td>
                     <td className="px-4 py-3">{r.urgent ? <span className="text-brick font-bold">急件</span> : ''}</td>
-                    <td className="px-4 py-3"><StatusPill status={r.status} /></td>
+                    <td className="px-4 py-3"><StatusPill status={r.status} hasStockIssue={r.has_stock_issue} /></td>
                     <td className="px-4 py-3">
                       <button onClick={() => setSelectedId(r.id)} className="text-sm underline text-ink/60">查看</button>
                     </td>
@@ -1524,7 +1557,7 @@ function ManagePage({ session, onNavigate, initialRequestId, initialFilters }) {
               <Card key={r.id} className="p-4 cursor-pointer" onClick={() => setSelectedId(r.id)}>
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="font-mono font-semibold text-sm">{r.request_no}</span>
-                  <StatusPill status={r.status} />
+                  <StatusPill status={r.status} hasStockIssue={r.has_stock_issue} />
                 </div>
                 <p className="text-xs text-ink/40">{r.store} · {r.applicant_name || '—'} · {fmtDateTime(r.created_at)}</p>
                 <div className="flex items-center justify-between mt-2">
@@ -1602,11 +1635,13 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
       setPartialErr('');
       return;
     }
-    await sb.from('purchase_items').update({
+    const patch = {
       item_status: newStatus,
       arrived_qty: newStatus === 'arrived' ? item.quantity : 0,
       item_status_updated_by: session.userId, item_status_updated_at: new Date().toISOString()
-    }).eq('id', item.id);
+    };
+    if (newStatus === 'stock_issue') { patch.stock_issue_acked_at = null; patch.stock_issue_acked_by = null; }
+    await sb.from('purchase_items').update(patch).eq('id', item.id);
     await load();
   }
 
@@ -1665,7 +1700,7 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
 
       <Card className="p-4 mb-4">
         <p className="text-sm font-bold mb-3">狀態</p>
-        <StatusPill status={req.status} />
+        <StatusPill status={req.status} hasStockIssue={req.has_stock_issue} />
         <p className="text-xs text-ink/30 mt-2">整單狀態依商品狀態自動判斷，不能手動切換</p>
         {canEdit && req.status !== 'cancelled' && req.status !== 'done' && (
           !showCancelPrompt ? (
@@ -1728,7 +1763,9 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
               )}
               {it.item_status === 'stock_issue' && (
                 <p className="text-[11px] text-ink/30 mt-1">
-                  {it.stock_issue_acked_at ? '門市已知悉 · ' + fmtDateTime(it.stock_issue_acked_at) : '門市尚未知悉'}
+                  {it.stock_issue_acked_at
+                    ? `門店已知悉 ✓${it.stock_issue_acked_by ? '（' + it.stock_issue_acked_by + '）' : ''} · ${fmtDateTime(it.stock_issue_acked_at)}`
+                    : '待門店知悉'}
                 </p>
               )}
               <div className="mt-2">
