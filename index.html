@@ -896,6 +896,8 @@ function StaffDashboard({ session, onNavigate }) {
   const [overviewItems, setOverviewItems] = useState([]);
   const [overviewLoading, setOverviewLoading] = useState(true);
   const [expandedProduct, setExpandedProduct] = useState(null);
+  const [overviewExpanded, setOverviewExpanded] = useState(false);
+  const [overviewSearch, setOverviewSearch] = useState('');
   const cardRefs = useRef({});
 
   function switchTab(next) {
@@ -1004,16 +1006,27 @@ function StaffDashboard({ session, onNavigate }) {
   }, [loadFlags, loadOverview]);
 
   // 未到貨品項總覽依商品名稱合併統計（每個 purchase_items 列只會被算一次，不會重複計算）
+  // 排序優先順序：缺貨未採購 → 尚缺數量較多 → 最早申請時間
   const overviewGroups = useMemo(() => {
     const map = {};
     overviewItems.forEach(it => {
-      if (!map[it.product_name]) map[it.product_name] = { product_name: it.product_name, totalQty: 0, totalArrived: 0, entries: [] };
+      if (!map[it.product_name]) {
+        map[it.product_name] = { product_name: it.product_name, totalQty: 0, totalArrived: 0, entries: [], hasStockIssue: false, earliestCreatedAt: null };
+      }
       const g = map[it.product_name];
       g.totalQty += it.quantity;
       g.totalArrived += (it.arrived_qty || 0);
       g.entries.push(it);
+      if (it.item_status === 'stock_issue') g.hasStockIssue = true;
+      const createdAt = it.purchase_requests.created_at;
+      if (!g.earliestCreatedAt || createdAt < g.earliestCreatedAt) g.earliestCreatedAt = createdAt;
     });
-    return Object.values(map).sort((a, b) => (b.totalQty - b.totalArrived) - (a.totalQty - a.totalArrived));
+    return Object.values(map).sort((a, b) => {
+      if (a.hasStockIssue !== b.hasStockIssue) return a.hasStockIssue ? -1 : 1;
+      const remA = a.totalQty - a.totalArrived, remB = b.totalQty - b.totalArrived;
+      if (remA !== remB) return remB - remA;
+      return new Date(a.earliestCreatedAt) - new Date(b.earliestCreatedAt);
+    });
   }, [overviewItems]);
 
   function scrollToCard(id) {
@@ -1084,44 +1097,70 @@ function StaffDashboard({ session, onNavigate }) {
         </div>
       )}
 
-      <p className="text-sm font-medium text-ink/60 mb-2">未到貨品項總覽</p>
-      {overviewLoading ? <Spinner /> : overviewGroups.length === 0 ? (
-        <p className="text-sm text-ink/40 text-center py-6 mb-4">目前沒有未到貨品項</p>
-      ) : (
-        <div className="flex flex-col gap-2 mb-6">
-          {overviewGroups.map(g => (
-            <Card key={g.product_name} className="p-3">
-              <div className="flex items-center justify-between cursor-pointer"
-                onClick={() => setExpandedProduct(p => p === g.product_name ? null : g.product_name)}>
-                <p className="text-[15px] font-medium truncate">{g.product_name}</p>
-                <p className="text-xs text-ink/50 shrink-0 ml-2">
-                  申請 {g.totalQty}・已到 {g.totalArrived}・<span className="text-brick font-bold">尚缺 {g.totalQty - g.totalArrived}</span>
-                </p>
-              </div>
-              {expandedProduct === g.product_name && (
-                <div className="mt-2 pt-2 border-t border-black/5 flex flex-col gap-2">
-                  {g.entries.map(it => (
-                    <button key={it.id} onClick={() => jumpToRequest(it.request_id)}
-                      className="text-left px-2.5 py-2 rounded-lg bg-black/[0.03] hover:bg-black/5">
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono text-xs font-semibold">{it.purchase_requests.request_no}</span>
-                        <span className="text-xs font-bold px-2 py-0.5 rounded-full text-white"
-                          style={{ background: (ITEM_STATUS_META[it.item_status] || {}).color || '#999' }}>
-                          {(ITEM_STATUS_META[it.item_status] || {}).label || it.item_status}
-                        </span>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-sm font-medium text-ink/60">未到貨品項總覽</p>
+        {!overviewSearch.trim() && overviewGroups.length > 3 && (
+          <button onClick={() => setOverviewExpanded(e => !e)} className="text-xs font-medium text-brick underline">
+            {overviewExpanded ? '收合' : '查看全部'}
+          </button>
+        )}
+      </div>
+      {(overviewGroups.length > 3 || overviewSearch.trim()) && (
+        <input type="text" value={overviewSearch} onChange={e => setOverviewSearch(e.target.value)}
+          placeholder="搜尋未到貨品項" className="w-full text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white mb-2" />
+      )}
+      {(() => {
+        const term = overviewSearch.trim().toLowerCase();
+        const filtered = term ? overviewGroups.filter(g => g.product_name.toLowerCase().includes(term)) : overviewGroups;
+        const visible = term || overviewExpanded || filtered.length <= 3 ? filtered : filtered.slice(0, 3);
+        const hiddenCount = filtered.length - visible.length;
+        return (
+          <div className="mb-6">
+            {overviewLoading ? <Spinner /> : filtered.length === 0 ? (
+              <p className="text-sm text-ink/40 text-center py-6">{term ? '沒有符合搜尋的品項' : '目前沒有未到貨品項'}</p>
+            ) : (
+              <React.Fragment>
+                <div className="flex flex-col gap-2">
+                  {visible.map(g => (
+                    <Card key={g.product_name} className="p-3">
+                      <div className="flex items-center justify-between cursor-pointer"
+                        onClick={() => setExpandedProduct(p => p === g.product_name ? null : g.product_name)}>
+                        <p className="text-[15px] font-medium truncate">{g.product_name}</p>
+                        <p className="text-xs text-ink/50 shrink-0 ml-2">
+                          申請 {g.totalQty}・已到 {g.totalArrived}・<span className="text-brick font-bold">尚缺 {g.totalQty - g.totalArrived}</span>
+                        </p>
                       </div>
-                      <p className="text-xs text-ink/50 mt-0.5">
-                        申請 {it.quantity}・已到 {it.arrived_qty || 0}・尚缺 {it.quantity - (it.arrived_qty || 0)}
-                        ・最後更新 {fmtDateTime(it.item_status_updated_at || it.purchase_requests.created_at)}
-                      </p>
-                    </button>
+                      {expandedProduct === g.product_name && (
+                        <div className="mt-2 pt-2 border-t border-black/5 flex flex-col gap-2">
+                          {g.entries.map(it => (
+                            <button key={it.id} onClick={() => jumpToRequest(it.request_id)}
+                              className="text-left px-2.5 py-2 rounded-lg bg-black/[0.03] hover:bg-black/5">
+                              <div className="flex items-center justify-between">
+                                <span className="font-mono text-xs font-semibold">{it.purchase_requests.request_no}</span>
+                                <span className="text-xs font-bold px-2 py-0.5 rounded-full text-white"
+                                  style={{ background: (ITEM_STATUS_META[it.item_status] || {}).color || '#999' }}>
+                                  {(ITEM_STATUS_META[it.item_status] || {}).label || it.item_status}
+                                </span>
+                              </div>
+                              <p className="text-xs text-ink/50 mt-0.5">
+                                申請 {it.quantity}・已到 {it.arrived_qty || 0}・尚缺 {it.quantity - (it.arrived_qty || 0)}
+                                ・最後更新 {fmtDateTime(it.item_status_updated_at || it.purchase_requests.created_at)}
+                              </p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </Card>
                   ))}
                 </div>
-              )}
-            </Card>
-          ))}
-        </div>
-      )}
+                {!term && hiddenCount > 0 && (
+                  <p className="text-xs text-ink/30 text-center mt-2">另有 {hiddenCount} 項未顯示</p>
+                )}
+              </React.Fragment>
+            )}
+          </div>
+        );
+      })()}
 
       <ManageTabBar tab={tab} onChange={switchTab} />
 
