@@ -111,9 +111,9 @@ function fmtDateTime(iso) {
 function cls(...xs) { return xs.filter(Boolean).join(' '); }
 
 /* ================= 共用 UI 元件 ================= */
-function Card({ children, className, onClick, style }) {
-  return <div className={cls('bg-white rounded-2xl border border-black/5 shadow-sm', className)} onClick={onClick} style={style}>{children}</div>;
-}
+const Card = React.forwardRef(function Card({ children, className, onClick, style }, ref) {
+  return <div ref={ref} className={cls('bg-white rounded-2xl border border-black/5 shadow-sm', className)} onClick={onClick} style={style}>{children}</div>;
+});
 function Button({ children, onClick, variant = 'primary', className, disabled, type = 'button' }) {
   const base = 'inline-flex items-center justify-center gap-2 rounded-xl font-medium transition active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none px-4 py-3 text-[15px]';
   const variants = {
@@ -862,17 +862,41 @@ function RequestItemsInline({ request, onAcked, onCompleted }) {
   );
 }
 
+const STAFF_QUICK_FILTERS = [
+  { key: 'all', label: '全部' },
+  { key: 'pending', label: '待採購' },
+  { key: 'ordering', label: '採購中' },
+  { key: 'partial', label: '部分到貨' },
+  { key: 'stock_issue', label: '缺貨未採購' },
+  { key: 'urgent', label: '急件' },
+  { key: 'unfinished', label: '只看未完成' }
+];
+
+function summarizeUnresolvedItems(items) {
+  const list = (items || []).filter(it => it.item_status !== 'arrived' && it.item_status !== 'cancelled');
+  const remainingQty = list.reduce((sum, it) => sum + Math.max(0, it.quantity - (it.arrived_qty || 0)), 0);
+  const names = list.map(it => it.product_name);
+  const shown = names.slice(0, 3);
+  return { count: list.length, remainingQty, shown, extra: names.length - shown.length };
+}
+
 function StaffDashboard({ session, onNavigate }) {
   const [tab, setTab] = useState('active');
+  const [quickFilter, setQuickFilter] = useState('all');
   const [filters, setFilters] = useState({ dateFrom: '', dateTo: '', search: '' });
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
+  const [pendingScrollId, setPendingScrollId] = useState(null);
   const [flaggedIds, setFlaggedIds] = useState(new Set());
   const [completedToast, setCompletedToast] = useState(false);
   const [statsRows, setStatsRows] = useState([]);
+  const [overviewItems, setOverviewItems] = useState([]);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [expandedProduct, setExpandedProduct] = useState(null);
+  const cardRefs = useRef({});
 
   function switchTab(next) {
     setTab(next);
@@ -881,12 +905,14 @@ function StaffDashboard({ session, onNavigate }) {
     }
   }
   function showAllTime() { setFilters(f => ({ ...f, dateFrom: '', dateTo: '' })); }
-  function clearFilters() { setFilters({ dateFrom: '', dateTo: '', search: '' }); }
+  function clearFilters() { setFilters({ dateFrom: '', dateTo: '', search: '' }); setQuickFilter('all'); }
 
   // 門市權限一律鎖定在自己的門市：清單查詢、搜尋比對都固定 eq('store', session.store)，
   // 不提供門市選擇，確保跟既有「門市只能看自己門市」的權限一致
   const buildQuery = useCallback((matchIds) => {
-    let q = sb.from('purchase_requests').select('*', { count: 'exact' }).eq('store', session.store).order('created_at', { ascending: false });
+    let q = sb.from('purchase_requests')
+      .select('*, purchase_items(id,product_name,quantity,arrived_qty,item_status)', { count: 'exact' })
+      .eq('store', session.store).order('created_at', { ascending: false });
     q = tab === 'history' ? q.in('status', HISTORY_SUB_STATUSES) : q.not('status', 'in', '(done,cancelled)');
     if (filters.dateFrom) q = q.gte('created_at', taipeiDayToUtc(filters.dateFrom, false));
     if (filters.dateTo) q = q.lte('created_at', taipeiDayToUtc(filters.dateTo, true));
@@ -894,15 +920,21 @@ function StaffDashboard({ session, onNavigate }) {
     return q;
   }, [tab, filters, session.store]);
 
+  // 搜尋涵蓋品項名稱／採購單號／整單備註三個欄位
   async function findMatchIds() {
     const term = filters.search.trim();
     if (!term) return null;
-    const [{ data: itemRows }, { data: reqRows }] = await Promise.all([
+    const [{ data: itemRows }, { data: reqRows }, { data: remarkRows }] = await Promise.all([
       sb.from('purchase_items').select('request_id, purchase_requests!inner(store)')
         .ilike('product_name', `%${term}%`).eq('purchase_requests.store', session.store),
-      sb.from('purchase_requests').select('id').eq('store', session.store).ilike('request_no', `%${term}%`)
+      sb.from('purchase_requests').select('id').eq('store', session.store).ilike('request_no', `%${term}%`),
+      sb.from('purchase_requests').select('id').eq('store', session.store).ilike('remark', `%${term}%`)
     ]);
-    return Array.from(new Set([...(itemRows || []).map(r => r.request_id), ...(reqRows || []).map(r => r.id)]));
+    return Array.from(new Set([
+      ...(itemRows || []).map(r => r.request_id),
+      ...(reqRows || []).map(r => r.id),
+      ...(remarkRows || []).map(r => r.id)
+    ]));
   }
 
   const load = useCallback(async () => {
@@ -943,9 +975,21 @@ function StaffDashboard({ session, onNavigate }) {
     setFlaggedIds(new Set([...(stockData || []), ...(remarkData || [])].map(d => d.request_id)));
   }, []);
 
+  // 未到貨品項總覽：獨立查詢，不受下方「處理中」清單的搜尋/快速篩選影響，永遠是完整清單
+  const loadOverview = useCallback(async () => {
+    setOverviewLoading(true);
+    const { data } = await sb.from('purchase_items')
+      .select('id,product_name,quantity,arrived_qty,item_status,item_status_updated_at,request_id,purchase_requests!inner(request_no,store,created_at)')
+      .not('item_status', 'in', '(arrived,cancelled)')
+      .eq('purchase_requests.store', session.store);
+    setOverviewItems(data || []);
+    setOverviewLoading(false);
+  }, [session.store]);
+
   useEffect(() => { load(); }, [load]);
   useEffect(() => { loadStats(); }, [loadStats]);
   useEffect(() => { loadFlags(); }, [loadFlags]);
+  useEffect(() => { loadOverview(); }, [loadOverview]);
   useEffect(() => {
     const ch = sb.channel('staff-dashboard-requests')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requests' }, () => { load(); loadStats(); })
@@ -954,15 +998,51 @@ function StaffDashboard({ session, onNavigate }) {
   }, [load, loadStats]);
   useEffect(() => {
     const ch = sb.channel('staff-dashboard-stock-issues')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_items' }, loadFlags)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_items' }, () => { loadFlags(); loadOverview(); })
       .subscribe();
     return () => { sb.removeChannel(ch); };
-  }, [loadFlags]);
+  }, [loadFlags, loadOverview]);
+
+  // 未到貨品項總覽依商品名稱合併統計（每個 purchase_items 列只會被算一次，不會重複計算）
+  const overviewGroups = useMemo(() => {
+    const map = {};
+    overviewItems.forEach(it => {
+      if (!map[it.product_name]) map[it.product_name] = { product_name: it.product_name, totalQty: 0, totalArrived: 0, entries: [] };
+      const g = map[it.product_name];
+      g.totalQty += it.quantity;
+      g.totalArrived += (it.arrived_qty || 0);
+      g.entries.push(it);
+    });
+    return Object.values(map).sort((a, b) => (b.totalQty - b.totalArrived) - (a.totalQty - a.totalArrived));
+  }, [overviewItems]);
+
+  function scrollToCard(id) {
+    const el = cardRefs.current[id];
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  function jumpToRequest(requestId) {
+    setExpandedId(requestId);
+    if (tab !== 'active') setTab('active');
+    if (quickFilter !== 'all') setQuickFilter('all');
+    if (filters.search) {
+      setFilters(f => ({ ...f, search: '' }));
+      setPendingScrollId(requestId);
+    } else {
+      requestAnimationFrame(() => scrollToCard(requestId));
+    }
+  }
+  useEffect(() => {
+    if (pendingScrollId && rows.some(r => r.id === pendingScrollId)) {
+      requestAnimationFrame(() => scrollToCard(pendingScrollId));
+      setPendingScrollId(null);
+    }
+  }, [rows, pendingScrollId]);
 
   function handleCompleted() {
     setCompletedToast(true);
     load();
     loadStats();
+    loadOverview();
   }
 
   const today = taipeiDateStr();
@@ -975,6 +1055,12 @@ function StaffDashboard({ session, onNavigate }) {
   }, [statsRows, today]);
 
   const isAllTime = !filters.dateFrom && !filters.dateTo;
+
+  const displayedRows = useMemo(() => {
+    if (tab !== 'active' || quickFilter === 'all' || quickFilter === 'unfinished') return rows;
+    if (quickFilter === 'urgent') return rows.filter(r => r.urgent);
+    return rows.filter(r => r.status === quickFilter);
+  }, [rows, tab, quickFilter]);
 
   return (
     <div className="pb-28">
@@ -998,12 +1084,68 @@ function StaffDashboard({ session, onNavigate }) {
         </div>
       )}
 
+      <p className="text-sm font-medium text-ink/60 mb-2">未到貨品項總覽</p>
+      {overviewLoading ? <Spinner /> : overviewGroups.length === 0 ? (
+        <p className="text-sm text-ink/40 text-center py-6 mb-4">目前沒有未到貨品項</p>
+      ) : (
+        <div className="flex flex-col gap-2 mb-6">
+          {overviewGroups.map(g => (
+            <Card key={g.product_name} className="p-3">
+              <div className="flex items-center justify-between cursor-pointer"
+                onClick={() => setExpandedProduct(p => p === g.product_name ? null : g.product_name)}>
+                <p className="text-[15px] font-medium truncate">{g.product_name}</p>
+                <p className="text-xs text-ink/50 shrink-0 ml-2">
+                  申請 {g.totalQty}・已到 {g.totalArrived}・<span className="text-brick font-bold">尚缺 {g.totalQty - g.totalArrived}</span>
+                </p>
+              </div>
+              {expandedProduct === g.product_name && (
+                <div className="mt-2 pt-2 border-t border-black/5 flex flex-col gap-2">
+                  {g.entries.map(it => (
+                    <button key={it.id} onClick={() => jumpToRequest(it.request_id)}
+                      className="text-left px-2.5 py-2 rounded-lg bg-black/[0.03] hover:bg-black/5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-xs font-semibold">{it.purchase_requests.request_no}</span>
+                        <span className="text-xs font-bold px-2 py-0.5 rounded-full text-white"
+                          style={{ background: (ITEM_STATUS_META[it.item_status] || {}).color || '#999' }}>
+                          {(ITEM_STATUS_META[it.item_status] || {}).label || it.item_status}
+                        </span>
+                      </div>
+                      <p className="text-xs text-ink/50 mt-0.5">
+                        申請 {it.quantity}・已到 {it.arrived_qty || 0}・尚缺 {it.quantity - (it.arrived_qty || 0)}
+                        ・最後更新 {fmtDateTime(it.item_status_updated_at || it.purchase_requests.created_at)}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
+
       <ManageTabBar tab={tab} onChange={switchTab} />
+
+      {tab === 'active' && (
+        <React.Fragment>
+          <input type="text" value={filters.search} onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
+            placeholder="搜尋單號、品項名稱或整單備註"
+            className="w-full text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white mb-2" />
+          <div className="flex gap-1.5 overflow-x-auto pb-1 mb-3 -mx-1 px-1">
+            {STAFF_QUICK_FILTERS.map(f => (
+              <button key={f.key} onClick={() => setQuickFilter(f.key)}
+                className={cls('shrink-0 px-3 py-1.5 rounded-full text-xs font-medium border transition',
+                  quickFilter === f.key ? 'bg-ink text-cream border-ink' : 'border-ink/15 text-ink/60')}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </React.Fragment>
+      )}
 
       {tab === 'history' && (
         <Card className="p-3 mb-4 flex flex-wrap gap-2 items-center">
           <input type="text" value={filters.search} onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
-            placeholder="搜尋單號或商品名稱" className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white flex-1 min-w-[160px]" />
+            placeholder="搜尋單號、品項名稱或整單備註" className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white flex-1 min-w-[160px]" />
           <div className="flex items-center gap-2">
             <input type="date" value={filters.dateFrom} onChange={e => setFilters(f => ({ ...f, dateFrom: e.target.value }))}
               className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
@@ -1023,33 +1165,45 @@ function StaffDashboard({ session, onNavigate }) {
       )}
 
       <p className="text-sm font-medium text-ink/60 mb-2">{tab === 'active' ? '處理中的採購' : '歷史紀錄'}</p>
-      {loading ? <Spinner /> : rows.length === 0 ? (
+      {loading ? <Spinner /> : displayedRows.length === 0 ? (
         <div className="text-center py-16">
-          <p className="text-sm text-ink/40 mb-3">{tab === 'history' ? '此範圍內無訂單' : '目前沒有處理中的採購'}</p>
-          {tab === 'history' && (filters.search || filters.dateFrom || filters.dateTo) && (
+          <p className="text-sm text-ink/40 mb-3">{tab === 'history' ? '此範圍內無訂單' : '目前沒有符合條件的處理中採購'}</p>
+          {(filters.search || filters.dateFrom || filters.dateTo || quickFilter !== 'all') && (
             <button onClick={clearFilters} className="text-sm text-brick underline">清除篩選</button>
           )}
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {rows.map(r => (
-            <Card key={r.id} onClick={() => setExpandedId(id => id === r.id ? null : r.id)}
-              className="px-4 py-3 cursor-pointer hover:border-ink/20">
-              <div className="flex items-center justify-between">
-                <div className="min-w-0">
-                  <p className="font-mono text-sm font-semibold truncate">{r.request_no}</p>
-                  <p className="text-xs text-ink/40 mt-0.5">{fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
+          {displayedRows.map(r => {
+            const summary = tab === 'active' ? summarizeUnresolvedItems(r.purchase_items) : null;
+            return (
+              <Card key={r.id} ref={el => { cardRefs.current[r.id] = el; }}
+                onClick={() => setExpandedId(id => id === r.id ? null : r.id)}
+                className="px-4 py-3 cursor-pointer hover:border-ink/20">
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0">
+                    <p className="font-mono text-sm font-semibold truncate">{r.request_no}</p>
+                    <p className="text-xs text-ink/40 mt-0.5">{fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {flaggedIds.has(r.id) && (
+                      <span className="text-xs font-bold px-2 py-1 rounded-full bg-brick text-white">⚠ 缺貨未採購</span>
+                    )}
+                    <StatusPill status={r.status} hasStockIssue={r.has_stock_issue} />
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  {flaggedIds.has(r.id) && (
-                    <span className="text-xs font-bold px-2 py-1 rounded-full bg-brick text-white">⚠ 缺貨未採購</span>
-                  )}
-                  <StatusPill status={r.status} hasStockIssue={r.has_stock_issue} />
-                </div>
-              </div>
-              {expandedId === r.id && <RequestItemsInline request={r} onAcked={loadFlags} onCompleted={handleCompleted} />}
-            </Card>
-          ))}
+                {expandedId !== r.id && summary && summary.count > 0 && (
+                  <div className="mt-1.5 pt-1.5 border-t border-black/5">
+                    <p className="text-xs text-ink/40">{summary.count} 項未完成・尚缺 {summary.remainingQty}</p>
+                    <p className="text-xs text-ink/30 truncate">
+                      {summary.shown.join('、')}{summary.extra > 0 ? `　另有 ${summary.extra} 項` : ''}
+                    </p>
+                  </div>
+                )}
+                {expandedId === r.id && <RequestItemsInline request={r} onAcked={() => { loadFlags(); loadOverview(); }} onCompleted={handleCompleted} />}
+              </Card>
+            );
+          })}
         </div>
       )}
 
