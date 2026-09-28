@@ -879,6 +879,15 @@ function summarizeUnresolvedItems(items) {
   const shown = names.slice(0, 3);
   return { count: list.length, remainingQty, shown, extra: names.length - shown.length };
 }
+// 管理端「快速瀏覽門店叫了什麼貨」用：列出整張單的商品內容（不只是尚未完成的），
+// 讓管理者不用點進去也能看到大致叫了什麼
+function summarizeAllItems(items) {
+  const list = items || [];
+  const totalQty = list.reduce((sum, it) => sum + it.quantity, 0);
+  const names = list.map(it => it.product_name);
+  const shown = names.slice(0, 3);
+  return { count: list.length, totalQty, shown, extra: names.length - shown.length };
+}
 
 function StaffDashboard({ session, onNavigate }) {
   const [tab, setTab] = useState('active');
@@ -1288,7 +1297,9 @@ function AdminDashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) 
   function clearFilters() { setFilters({ dateFrom: '', dateTo: '', search: '' }); }
 
   const buildQuery = useCallback((matchIds) => {
-    let q = sb.from('purchase_requests').select('*', { count: 'exact' }).order('created_at', { ascending: false });
+    let q = sb.from('purchase_requests')
+      .select('*, purchase_items(id,product_name,quantity,arrived_qty,item_status)', { count: 'exact' })
+      .order('created_at', { ascending: false });
     q = tab === 'history' ? q.in('status', HISTORY_SUB_STATUSES) : q.not('status', 'in', '(done,cancelled)');
     if (storeFilter !== 'all') q = q.eq('store', storeFilter);
     if (filters.dateFrom) q = q.gte('created_at', taipeiDayToUtc(filters.dateFrom, false));
@@ -1415,18 +1426,29 @@ function AdminDashboard({ session, onNavigate, onOpenRequest, onOpenFiltered }) 
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {rows.map(r => (
-            <Card key={r.id} onClick={() => onOpenRequest(r.id)}
-              className="px-4 py-3 cursor-pointer hover:border-ink/20">
-              <div className="flex items-center justify-between">
-                <div className="min-w-0">
-                  <p className="font-mono text-sm font-semibold truncate">{r.request_no}</p>
-                  <p className="text-xs text-ink/40 mt-0.5">{r.store} · {fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
+          {rows.map(r => {
+            const summary = summarizeAllItems(r.purchase_items);
+            return (
+              <Card key={r.id} onClick={() => onOpenRequest(r.id)}
+                className="px-4 py-3 cursor-pointer hover:border-ink/20">
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0">
+                    <p className="font-mono text-sm font-semibold truncate">{r.request_no}</p>
+                    <p className="text-xs text-ink/40 mt-0.5">{r.store} · {fmtDateTime(r.created_at)}{r.urgent ? ' · 急件' : ''}</p>
+                  </div>
+                  <StatusPill status={r.status} hasStockIssue={r.has_stock_issue} />
                 </div>
-                <StatusPill status={r.status} hasStockIssue={r.has_stock_issue} />
-              </div>
-            </Card>
-          ))}
+                {summary.count > 0 && (
+                  <div className="mt-1.5 pt-1.5 border-t border-black/5">
+                    <p className="text-xs text-ink/40">{summary.count} 項商品・共 {summary.totalQty} 件</p>
+                    <p className="text-xs text-ink/30 truncate">
+                      {summary.shown.join('、')}{summary.extra > 0 ? `　另有 ${summary.extra} 項` : ''}
+                    </p>
+                  </div>
+                )}
+              </Card>
+            );
+          })}
         </div>
       )}
 
