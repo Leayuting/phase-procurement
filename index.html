@@ -2174,6 +2174,9 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
   const [partialPromptId, setPartialPromptId] = useState(null);
   const [partialQtyDraft, setPartialQtyDraft] = useState('');
   const [partialErr, setPartialErr] = useState('');
+  const [quantityEditId, setQuantityEditId] = useState(null);
+  const [quantityDraft, setQuantityDraft] = useState('');
+  const [quantityErr, setQuantityErr] = useState('');
   const [showCompletedToast, setShowCompletedToast] = useState(false);
   const prevStatusRef = useRef(null);
 
@@ -2247,6 +2250,22 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
       item_status_updated_by: session.userId, item_status_updated_at: new Date().toISOString()
     }).eq('id', item.id);
     setPartialPromptId(null);
+    await load();
+  }
+
+  // 採購數量可調整（例如商品特價時多採買），只要求新數量不能小於已到貨數量，避免出現負的尚缺數
+  async function confirmQuantity(item) {
+    const n = parseInt(quantityDraft, 10);
+    const minAllowed = item.arrived_qty || 0;
+    if (!n || n < 1 || n < minAllowed) {
+      setQuantityErr(minAllowed > 0 ? `數量不能小於已到貨的 ${minAllowed}` : '請填寫正確數量');
+      return;
+    }
+    await sb.from('purchase_items').update({
+      quantity: n, quantity_updated_by: session.userId, quantity_updated_at: new Date().toISOString()
+    }).eq('id', item.id);
+    setQuantityEditId(null);
+    setQuantityErr('');
     await load();
   }
 
@@ -2333,8 +2352,29 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
             <div key={it.id} className="border-b border-black/5 last:border-0 pb-3 last:pb-0">
               <div className="flex items-center justify-between">
                 <p className="text-[15px] font-medium">{it.product_name}</p>
-                <p className="text-sm text-ink/50">× {it.quantity}</p>
+                <button onClick={() => { setQuantityEditId(it.id); setQuantityDraft(String(it.quantity)); setQuantityErr(''); }}
+                  className="text-sm text-ink/50 underline decoration-dotted">
+                  × {it.quantity}
+                </button>
               </div>
+              {quantityEditId === it.id && (
+                <div className="mt-1.5 bg-black/5 rounded-lg px-3 py-2.5">
+                  <p className="text-xs font-medium mb-1.5">調整採購數量（例如商品特價多採買）</p>
+                  <div className="flex items-center gap-2">
+                    <input type="number" inputMode="numeric" value={quantityDraft} autoFocus
+                      onChange={e => setQuantityDraft(e.target.value)}
+                      className="w-24 px-3 py-1.5 rounded-lg border border-ink/15 text-sm" />
+                    <button onClick={() => confirmQuantity(it)} className="text-xs text-ink/60 underline">儲存</button>
+                    <button onClick={() => { setQuantityEditId(null); setQuantityErr(''); }} className="text-xs text-ink/30 underline">取消</button>
+                  </div>
+                  {quantityErr && <p className="text-brick text-xs mt-1">{quantityErr}</p>}
+                </div>
+              )}
+              {it.quantity_updated_at && (
+                <p className="text-[11px] text-ink/30 mt-0.5">
+                  {usersMap[it.quantity_updated_by] || '—'} 於 {fmtDateTime(it.quantity_updated_at)} 調整數量
+                </p>
+              )}
               {it.source && <p className="text-xs text-ink/40 mt-0.5">來源：{it.source}{it.url ? '　' : ''}{it.url && <a href={it.url} target="_blank" rel="noreferrer" className="underline">連結</a>}</p>}
               {it.item_status === 'partial' && (
                 <p className="text-xs text-ink/40 mt-0.5">已到貨 {it.arrived_qty}／訂購 {it.quantity}，尚缺 {it.quantity - it.arrived_qty}</p>
