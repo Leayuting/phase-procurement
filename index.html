@@ -735,10 +735,20 @@ function RequestItemsInline({ request, onAcked, onCompleted }) {
   async function cancelRequest() {
     setCancelling(true);
     setCancelErr('');
-    // 送出前重新向資料庫確認真實狀態，避免畫面還沒刷新時（例如後台剛把狀態改成採購中）
-    // 門市誤取消已經開始處理的訂單；取消動作本身也只作用在仍是「待採購」的品項上
-    const { data: freshItems } = await sb.from('purchase_items').select('item_status').eq('request_id', request.id);
+    // 送出前重新向資料庫確認真實狀態，避免畫面還沒刷新時（例如後台剛把狀態改成採購中，
+    // 或已經刷卡付款）門市誤取消已經開始處理／已經花錢買的訂單；
+    // 取消動作本身也只作用在仍是「待採購」的品項上
+    const [{ data: freshItems }, { data: freshReq }] = await Promise.all([
+      sb.from('purchase_items').select('item_status').eq('request_id', request.id),
+      sb.from('purchase_requests').select('has_payment').eq('id', request.id).single()
+    ]);
     const stillAllPending = (freshItems || []).length > 0 && (freshItems || []).every(it => it.item_status === 'pending');
+    if (freshReq && freshReq.has_payment) {
+      setCancelErr('此採購單已有付款紀錄（已下單購買），無法自行取消，請洽採購人員');
+      setCancelling(false);
+      await load();
+      return;
+    }
     if (!stillAllPending) {
       setCancelErr('此採購單已開始處理（採購中），無法自行取消，請洽採購人員');
       setCancelling(false);
@@ -824,7 +834,7 @@ function RequestItemsInline({ request, onAcked, onCompleted }) {
           ))}
           {request.remark && <p className="text-xs text-ink/40 pt-1 border-t border-black/5 mt-1">整單備註：{request.remark}</p>}
 
-          {!actionDone && effectiveStatus === 'pending' && (
+          {!actionDone && effectiveStatus === 'pending' && !request.has_payment && (
             <div className="pt-1 border-t border-black/5 mt-1">
               {!cancelExpanded ? (
                 <button onClick={() => setCancelExpanded(true)} className="text-xs font-medium text-brick underline">
