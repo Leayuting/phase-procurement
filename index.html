@@ -696,6 +696,7 @@ function RequestItemsInline({ request, onAcked, onCompleted }) {
   const [actionDone, setActionDone] = useState(null); // null | 'cancelled' | 'accepted'
   const [cancelExpanded, setCancelExpanded] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [cancelErr, setCancelErr] = useState('');
   const [showAccept, setShowAccept] = useState(false);
 
   const load = useCallback(async () => {
@@ -733,12 +734,23 @@ function RequestItemsInline({ request, onAcked, onCompleted }) {
 
   async function cancelRequest() {
     setCancelling(true);
+    setCancelErr('');
+    // 送出前重新向資料庫確認真實狀態，避免畫面還沒刷新時（例如後台剛把狀態改成採購中）
+    // 門市誤取消已經開始處理的訂單；取消動作本身也只作用在仍是「待採購」的品項上
+    const { data: freshItems } = await sb.from('purchase_items').select('item_status').eq('request_id', request.id);
+    const stillAllPending = (freshItems || []).length > 0 && (freshItems || []).every(it => it.item_status === 'pending');
+    if (!stillAllPending) {
+      setCancelErr('此採購單已開始處理（採購中），無法自行取消，請洽採購人員');
+      setCancelling(false);
+      await load();
+      return;
+    }
     await sb.from('purchase_items').update({ item_status: 'cancelled' })
-      .eq('request_id', request.id).neq('item_status', 'cancelled');
+      .eq('request_id', request.id).eq('item_status', 'pending');
     setActionDone('cancelled');
     setCancelling(false);
     setCancelExpanded(false);
-    load();
+    await load();
     if (onAcked) onAcked();
   }
 
@@ -822,12 +834,13 @@ function RequestItemsInline({ request, onAcked, onCompleted }) {
                 <div className="bg-brick/10 border border-brick/30 rounded-lg px-3 py-2 mt-1">
                   <p className="text-xs text-brick font-bold mb-2">確定要取消這筆採購嗎？取消後不可恢復，如有需求請重新新增採購。</p>
                   <div className="flex gap-2">
-                    <button onClick={() => setCancelExpanded(false)} className="text-xs text-ink/50 underline">我再想想</button>
+                    <button onClick={() => { setCancelExpanded(false); setCancelErr(''); }} className="text-xs text-ink/50 underline">我再想想</button>
                     <button onClick={cancelRequest} disabled={cancelling}
                       className="text-xs font-bold px-3 py-1.5 rounded-lg bg-brick text-white disabled:opacity-50">
                       {cancelling ? '取消中…' : '確定取消'}
                     </button>
                   </div>
+                  {cancelErr && <p className="text-brick text-xs font-bold mt-2">{cancelErr}</p>}
                 </div>
               )}
             </div>
