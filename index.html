@@ -89,6 +89,20 @@ const CLOSED_STATUSES = ['done', 'cancelled'];
 function isClosedStatus(status) { return CLOSED_STATUSES.includes(status); }
 const ACTIVE_SUB_STATUSES = ['pending', 'ordering', 'partial', 'stock_issue'];
 const HISTORY_SUB_STATUSES = ['done', 'cancelled'];
+// 門市自行取消的統一判斷：採購中＋已有付款紀錄 時用指定文案擋下（硬性限制，資料庫也有
+// 對應的 trigger 防止繞過前端）；其餘非待採購的狀態沿用既有訊息，待採購且無付款才允許取消
+function cancelBlockReason(status, hasPayment) {
+  if (status === 'ordering' && hasPayment) {
+    return '此筆採購已進入採購流程並建立付款紀錄，無法取消，請聯繫採購人員。';
+  }
+  if (hasPayment) {
+    return '此採購單已有付款紀錄，無法自行取消，請洽採購人員';
+  }
+  if (status !== 'pending') {
+    return `此採購單已開始處理（${(STATUS_META[status] || {}).label || status}），無法自行取消，請洽採購人員`;
+  }
+  return null;
+}
 
 /* ================= 小工具 ================= */
 async function sha256Hex(text) {
@@ -711,6 +725,7 @@ function RequestItemsInline({ request, onAcked, onCompleted }) {
   useEffect(() => { load(); }, [load]);
 
   const effectiveStatus = request.status;
+  const cancelBlocked = cancelBlockReason(effectiveStatus, request.has_payment);
   const [ackingItemId, setAckingItemId] = useState(null);
   const [ackName, setAckName] = useState('');
   const [ackErr, setAckErr] = useState('');
@@ -736,27 +751,27 @@ function RequestItemsInline({ request, onAcked, onCompleted }) {
     setCancelling(true);
     setCancelErr('');
     // 送出前重新向資料庫確認真實狀態，避免畫面還沒刷新時（例如後台剛把狀態改成採購中，
-    // 或已經刷卡付款）門市誤取消已經開始處理／已經花錢買的訂單；
-    // 取消動作本身也只作用在仍是「待採購」的品項上
-    const [{ data: freshItems }, { data: freshReq }] = await Promise.all([
-      sb.from('purchase_items').select('item_status').eq('request_id', request.id),
-      sb.from('purchase_requests').select('has_payment').eq('id', request.id).single()
-    ]);
-    const stillAllPending = (freshItems || []).length > 0 && (freshItems || []).every(it => it.item_status === 'pending');
-    if (freshReq && freshReq.has_payment) {
-      setCancelErr('此採購單已有付款紀錄（已下單購買），無法自行取消，請洽採購人員');
+    // 或已經刷卡付款）門市誤取消已經開始處理／已經花錢買的訂單。status==='pending' 由
+    // recalc_request_status trigger 保證等同於「全部品項都還是待採購」，不用另外查品項。
+    // 取消動作本身也只作用在仍是「待採購」的品項上，資料庫也有獨立的硬性限制（見遷移檔
+    // prevent_staff_cancel_with_payment），這裡的前端檢查只是讓使用者更快看到原因
+    const { data: freshReq } = await sb.from('purchase_requests').select('status,has_payment').eq('id', request.id).single();
+    const err = cancelBlockReason(freshReq ? freshReq.status : request.status, freshReq ? freshReq.has_payment : request.has_payment);
+    if (err) {
+      setCancelErr(err);
       setCancelling(false);
       await load();
       return;
     }
-    if (!stillAllPending) {
-      setCancelErr('此採購單已開始處理（採購中），無法自行取消，請洽採購人員');
-      setCancelling(false);
-      await load();
-      return;
-    }
-    await sb.from('purchase_items').update({ item_status: 'cancelled' })
+    const { error: cancelErrRes } = await sb.from('purchase_items').update({ item_status: 'cancelled' })
       .eq('request_id', request.id).eq('item_status', 'pending');
+    if (cancelErrRes) {
+      // 最後一道防線：就算前面檢查都通過，資料庫層級的限制還是可能擋下（例如同時間剛好有人登記付款）
+      setCancelErr('此筆採購已進入採購流程並建立付款紀錄，無法取消，請聯繫採購人員。');
+      setCancelling(false);
+      await load();
+      return;
+    }
     setActionDone('cancelled');
     setCancelling(false);
     setCancelExpanded(false);
@@ -834,9 +849,16 @@ function RequestItemsInline({ request, onAcked, onCompleted }) {
           ))}
           {request.remark && <p className="text-xs text-ink/40 pt-1 border-t border-black/5 mt-1">整單備註：{request.remark}</p>}
 
-          {!actionDone && effectiveStatus === 'pending' && !request.has_payment && (
+          {!actionDone && effectiveStatus !== 'done' && effectiveStatus !== 'cancelled' && (
             <div className="pt-1 border-t border-black/5 mt-1">
-              {!cancelExpanded ? (
+              {cancelBlocked ? (
+                <div>
+                  <button disabled className="text-xs font-medium text-ink/30 underline decoration-ink/20 cursor-not-allowed">
+                    取消採購
+                  </button>
+                  <p className="text-xs text-ink/40 mt-1">{cancelBlocked}</p>
+                </div>
+              ) : !cancelExpanded ? (
                 <button onClick={() => setCancelExpanded(true)} className="text-xs font-medium text-brick underline">
                   取消採購
                 </button>
