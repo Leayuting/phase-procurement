@@ -2567,12 +2567,12 @@ function ManageDetail({ requestId, session, usersMap, onBack }) {
 /* ================= 公司信用卡（採購／管理者） ================= */
 const SOURCE_LABEL = { purchase: '採購單付款', manual: '自行登記', admin_backfill: '管理者補登' };
 
-function ManualCardForm({ session, defaultStore, lockedCard, onSave, onCancel }) {
-  const [date, setDate] = useState(taipeiDateStr());
-  const [card, setCard] = useState(lockedCard || '');
-  const [amount, setAmount] = useState('');
-  const [purpose, setPurpose] = useState('');
-  const [store, setStore] = useState(defaultStore || STORES[0]);
+function ManualCardForm({ session, defaultStore, lockedCard, initial, onSave, onCancel }) {
+  const [date, setDate] = useState(initial ? initial.txn_date : taipeiDateStr());
+  const [card, setCard] = useState(lockedCard || (initial ? initial.card : ''));
+  const [amount, setAmount] = useState(initial ? String(initial.amount) : '');
+  const [purpose, setPurpose] = useState(initial ? (initial.purpose || '') : '');
+  const [store, setStore] = useState(initial ? initial.store : (defaultStore || STORES[0]));
   const [err, setErr] = useState('');
 
   function submit() {
@@ -2610,7 +2610,7 @@ function ManualCardForm({ session, defaultStore, lockedCard, onSave, onCancel })
         {err && <p className="text-brick text-sm">{err}</p>}
         <div className="flex gap-2">
           <Button variant="subtle" className="flex-1" onClick={onCancel}>取消</Button>
-          <Button className="flex-1" onClick={submit}>儲存</Button>
+          <Button className="flex-1" onClick={submit}>{initial ? '儲存修改' : '儲存'}</Button>
         </div>
       </div>
     </Card>
@@ -2637,6 +2637,7 @@ function CardTransactionList({ session, onOpenRequest }) {
   const [usersMap, setUsersMap] = useState({});
   const [expandedId, setExpandedId] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
 
   useEffect(() => {
     sb.from('users').select('id,name').then(({ data }) => {
@@ -2666,6 +2667,11 @@ function CardTransactionList({ session, onOpenRequest }) {
   }
   async function deleteRow(id) {
     await sb.from('card_transactions').delete().eq('id', id);
+    load();
+  }
+  async function updateRow(id, fields) {
+    await sb.from('card_transactions').update(fields).eq('id', id);
+    setEditingId(null);
     load();
   }
   async function markCashReconciled(id) {
@@ -2722,7 +2728,12 @@ function CardTransactionList({ session, onOpenRequest }) {
                   <ReconBadge status={r.recon_status} />
                 </div>
               </div>
-              {expandedId === r.id && (
+              {expandedId === r.id && editingId === r.id ? (
+                <div onClick={e => e.stopPropagation()}>
+                  <ManualCardForm session={session} initial={r}
+                    onSave={fields => updateRow(r.id, fields)} onCancel={() => setEditingId(null)} />
+                </div>
+              ) : expandedId === r.id && (
                 <div className="border-t border-black/5 mt-3 pt-3 text-sm text-ink/60 flex flex-col gap-1.5" onClick={e => e.stopPropagation()}>
                   <p>費用歸屬：{r.store}</p>
                   <p>登記人：{usersMap[r.registrant_id] || '—'}</p>
@@ -2735,8 +2746,11 @@ function CardTransactionList({ session, onOpenRequest }) {
                       ✓ 已對帳（現金無帳單可對，登記無誤即可標記）
                     </button>
                   )}
-                  {isAdmin && r.recon_status === 'pending' && (
-                    <button onClick={() => deleteRow(r.id)} className="text-left underline text-brick mt-1">刪除這筆</button>
+                  {isAdmin && (
+                    <button onClick={() => setEditingId(r.id)} className="text-left underline text-ink/70 mt-1">編輯這筆（登記錯誤時可修改）</button>
+                  )}
+                  {isAdmin && (
+                    <button onClick={() => deleteRow(r.id)} className="text-left underline text-brick">刪除這筆</button>
                   )}
                 </div>
               )}
