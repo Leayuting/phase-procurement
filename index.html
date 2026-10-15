@@ -2630,6 +2630,7 @@ function currentYearMonth() {
 }
 
 function CardTransactionList({ session, onOpenRequest }) {
+  const isAdmin = session.role === 'admin';
   const [filters, setFilters] = useState(() => ({ month: currentYearMonth(), card: 'all', store: 'all', recon: 'all' }));
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2678,9 +2679,11 @@ function CardTransactionList({ session, onOpenRequest }) {
     <div>
       <div className="flex items-center justify-between mb-3">
         <p className="text-sm text-ink/50">刷卡紀錄</p>
-        <Button variant="brick" onClick={() => setShowForm(s => !s)}>{showForm ? '取消' : '＋新增刷卡紀錄'}</Button>
+        {isAdmin && (
+          <Button variant="brick" onClick={() => setShowForm(s => !s)}>{showForm ? '取消' : '＋新增刷卡紀錄'}</Button>
+        )}
       </div>
-      {showForm && <ManualCardForm session={session} defaultStore={session.store} onSave={addManual} onCancel={() => setShowForm(false)} />}
+      {isAdmin && showForm && <ManualCardForm session={session} defaultStore={session.store} onSave={addManual} onCancel={() => setShowForm(false)} />}
 
       <Card className="p-3 mb-3 flex flex-wrap gap-2 items-center">
         <input type="month" value={filters.month} onChange={e => setFilters(f => ({ ...f, month: e.target.value }))}
@@ -2732,7 +2735,7 @@ function CardTransactionList({ session, onOpenRequest }) {
                       ✓ 已對帳（現金無帳單可對，登記無誤即可標記）
                     </button>
                   )}
-                  {r.recon_status === 'pending' && (
+                  {isAdmin && r.recon_status === 'pending' && (
                     <button onClick={() => deleteRow(r.id)} className="text-left underline text-brick mt-1">刪除這筆</button>
                   )}
                 </div>
