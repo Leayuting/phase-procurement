@@ -2748,6 +2748,7 @@ function CardTransactionList({ session, onOpenRequest }) {
 function CardReconciliation({ session }) {
   const [card, setCard] = useState(CARD_OPTIONS[0]);
   const [month, setMonth] = useState(currentYearMonth());
+  const [store, setStore] = useState('all');
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [usersMap, setUsersMap] = useState({});
@@ -2777,9 +2778,11 @@ function CardReconciliation({ session }) {
   }, [card, month]);
   useEffect(() => { load(); }, [load]);
 
+  // 系統登記總額／差額是跟銀行帳單對帳用的，要用全部門店的加總，不受下面的門店篩選影響
   const systemTotal = useMemo(() => rows.reduce((s, r) => s + Number(r.amount), 0), [rows]);
-  const pendingCount = useMemo(() => rows.filter(r => r.recon_status === 'pending').length, [rows]);
   const diff = billSaved ? Number(billSaved.bill_total) - systemTotal : null;
+  const filteredRows = useMemo(() => store === 'all' ? rows : rows.filter(r => r.store === store), [rows, store]);
+  const pendingCount = useMemo(() => filteredRows.filter(r => r.recon_status === 'pending').length, [filteredRows]);
 
   async function saveBill() {
     const amt = parseFloat(billTotal);
@@ -2814,8 +2817,13 @@ function CardReconciliation({ session }) {
             {c}
           </button>
         ))}
+        <select value={store} onChange={e => setStore(e.target.value)}
+          className="ml-auto text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white">
+          <option value="all">全部門店</option>
+          {STORES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
         <input type="month" value={month} onChange={e => setMonth(e.target.value)}
-          className="ml-auto text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
+          className="text-sm border border-ink/15 rounded-lg px-3 py-2 bg-white" />
       </div>
 
       <Card className="p-4 mb-4">
@@ -2844,11 +2852,11 @@ function CardReconciliation({ session }) {
       </div>
       {showBackfill && <ManualCardForm session={session} lockedCard={card} onSave={addBackfill} onCancel={() => setShowBackfill(false)} />}
 
-      {loading ? <Spinner /> : rows.length === 0 ? (
-        <p className="text-sm text-ink/40 text-center py-10">這期沒有刷卡紀錄</p>
+      {loading ? <Spinner /> : filteredRows.length === 0 ? (
+        <p className="text-sm text-ink/40 text-center py-10">{store === 'all' ? '這期沒有刷卡紀錄' : '這期這間門店沒有刷卡紀錄'}</p>
       ) : (
         <div className="flex flex-col gap-2">
-          {rows.map(r => (
+          {filteredRows.map(r => (
             <Card key={r.id} className="px-4 py-3">
               <div className="flex items-center justify-between">
                 <div className="min-w-0">
