@@ -355,9 +355,11 @@ function LoginScreen({ onStaffLogin, onAdminLogin }) {
 
 /* ================= Dashboard ================= */
 function StatCard({ num, label, onClick }) {
+  const len = String(num).length;
+  const sizeClass = len >= 8 ? 'text-lg' : len >= 6 ? 'text-xl' : len >= 4 ? 'text-2xl' : 'text-3xl';
   return (
-    <Card onClick={onClick} className={cls('px-4 py-4 text-center', onClick && 'cursor-pointer hover:border-ink/20')}>
-      <div className="text-3xl font-black">{num}</div>
+    <Card onClick={onClick} className={cls('px-2 py-4 text-center overflow-hidden', onClick && 'cursor-pointer hover:border-ink/20')}>
+      <div className={cls('font-black leading-tight truncate', sizeClass)}>{num}</div>
       <div className="text-xs text-ink/50 mt-1">{label}</div>
     </Card>
   );
