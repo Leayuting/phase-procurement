@@ -2797,10 +2797,10 @@ function CardReconciliation({ session }) {
   }, [card, month]);
   useEffect(() => { load(); }, [load]);
 
-  // 系統登記總額／差額是跟銀行帳單對帳用的，要用全部門店的加總，不受下面的門店篩選影響
-  const systemTotal = useMemo(() => rows.reduce((s, r) => s + Number(r.amount), 0), [rows]);
-  const diff = billSaved ? Number(billSaved.bill_total) - systemTotal : null;
   const filteredRows = useMemo(() => store === 'all' ? rows : rows.filter(r => r.store === store), [rows, store]);
+  const systemTotal = useMemo(() => filteredRows.reduce((s, r) => s + Number(r.amount), 0), [filteredRows]);
+  const reconciledTotal = useMemo(() => filteredRows.filter(r => r.recon_status === 'reconciled').reduce((s, r) => s + Number(r.amount), 0), [filteredRows]);
+  const diff = billSaved ? Number(billSaved.bill_total) - systemTotal : null;
   const pendingCount = useMemo(() => filteredRows.filter(r => r.recon_status === 'pending').length, [filteredRows]);
 
   async function saveBill() {
@@ -2855,8 +2855,9 @@ function CardReconciliation({ session }) {
           </div>
         </div>
         {!loading && (
-          <div className="grid grid-cols-3 gap-2.5 mt-3">
+          <div className="grid grid-cols-2 gap-2.5 mt-3">
             <StatCard num={'$' + systemTotal.toLocaleString()} label="系統登記總額" />
+            <StatCard num={'$' + reconciledTotal.toLocaleString()} label="已對帳金額" />
             <StatCard num={diff === null ? '—' : ('$' + diff.toLocaleString())} label="差額" />
             <StatCard num={pendingCount} label="待對帳筆數" />
           </div>
